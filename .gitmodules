@@ -1,0 +1,3 @@
+[submodule "external/WpfDesigner"]
+	path = external/WpfDesigner
+	url = https://github.com/icsharpcode/WpfDesigner
