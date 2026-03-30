@@ -67,7 +67,7 @@ export function parseProject(projectPath: string): { projectName: string; target
   const projectDir = path.dirname(projectPath);
   const projectName = path.basename(projectPath, '.csproj');
 
-  let targetFramework = 'net6.0-windows';
+  let targetFramework = 'net10.0-windows';
   let outputPathOverride: string | null = null;
 
   try {
@@ -112,6 +112,69 @@ export function getOutputAssemblies(projectPath: string): string[] {
     .readdirSync(outputPath)
     .filter((f: string) => f.endsWith('.dll') && !f.endsWith('.resources.dll'))
     .map((f: string) => path.join(outputPath, f));
+}
+
+/**
+ * Best-effort incremental check used before spawning a preview build.
+ * If the newest relevant source file is older than the newest output assembly,
+ * we can skip `dotnet build` and launch the designer immediately.
+ */
+export function areProjectOutputsUpToDate(projectPath: string): boolean {
+  const { outputPath } = parseProject(projectPath);
+  if (!fs.existsSync(outputPath)) {
+    return false;
+  }
+
+  const outputFiles = fs
+    .readdirSync(outputPath)
+    .filter((f: string) =>
+      (f.endsWith('.dll') && !f.endsWith('.resources.dll')) ||
+      f.endsWith('.exe'))
+    .map((f: string) => path.join(outputPath, f))
+    .filter((f: string) => fs.existsSync(f));
+
+  if (outputFiles.length === 0) {
+    return false;
+  }
+
+  let newestOutputTime = 0;
+  for (const file of outputFiles) {
+    newestOutputTime = Math.max(newestOutputTime, fs.statSync(file).mtimeMs);
+  }
+
+  let newestInputTime = 0;
+  const projectDir = path.dirname(projectPath);
+  const pending: string[] = [projectDir];
+  const ignoredDirs = new Set(['bin', 'obj', '.git', 'node_modules', '.vs']);
+  const watchedExtensions = new Set(['.cs', '.xaml', '.csproj', '.props', '.targets', '.resx']);
+
+  while (pending.length > 0) {
+    const currentDir = pending.pop();
+    if (!currentDir) {
+      continue;
+    }
+
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        if (!ignoredDirs.has(entry.name)) {
+          pending.push(fullPath);
+        }
+        continue;
+      }
+
+      if (!watchedExtensions.has(path.extname(entry.name).toLowerCase())) {
+        continue;
+      }
+
+      newestInputTime = Math.max(newestInputTime, fs.statSync(fullPath).mtimeMs);
+      if (newestInputTime > newestOutputTime) {
+        return false;
+      }
+    }
+  }
+
+  return newestInputTime > 0 && newestInputTime <= newestOutputTime;
 }
 
 /**

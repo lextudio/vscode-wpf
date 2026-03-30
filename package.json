@@ -77,6 +77,11 @@
           "type": "string",
           "default": "Debug",
           "description": "MSBuild configuration used when building the WPF project (e.g. Debug, Release)."
+        },
+        "wpf.designerTargetFramework": {
+          "type": "string",
+          "default": "",
+          "description": "Target framework used when building the XamlDesigner tool. Leave empty to auto-detect the highest .NET SDK installed on this machine (recommended). Override only when you need to pin to a specific version, e.g. net10.0-windows."
         }
       }
     }

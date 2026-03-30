@@ -1,52 +1,17 @@
 # VS Code Tools for WPF
 
-This is a VS Code extension targeting `.xaml` files for WPF projects.
+This is a VS Code extension targeting `.xaml` files for WPF projects. Different from many similar extensions, this one delivers you a full feature
+visual designer for WPF (originated from SharpDevelop 4).
 
 ## Getting started
 
 - Activates on `*.xaml` files.
-- A simple hover provider showing the word under the cursor.
+- Click the WPF preview action on top right corner of your XAML file tab to launch the visual designer.
 
-## Packaging and publishing
+## License
 
-On Windows use the PowerShell script:
+MIT
 
-```
-npm run package:win    # builds and packages using publish.ps1
-npm run package:publish:win   # builds, packages and publishes (requires vsce login)
-```
+## Copyright
 
-Both commands call `npm run build` (esbuild) and then `npx vsce package`. For publishing they call `npx vsce publish` — ensure you're logged in (`npx vsce login <publisher>`).
-
-Versioning workflow
-
-- Tag a release in git using a `v` prefix, e.g. `git tag v1.0.0` and push the tag.
-- The publish script will read the latest tag and update `package.json` version automatically before packaging.
-- You can run the updater manually with:
-
-```
-npm run version:git
-```
-
-Then package with:
-
-```
-npm run package:win
-```
-
-GitVersion integration
-
-This repository can use GitVersion to compute the semantic version instead of relying on manual tags. If `gitversion` is installed on the PATH the publish flow will prefer it automatically.
-
-Install GitVersion (Windows examples):
-
-- Via Chocolatey: `choco install gitversion.portable`
-- Or via dotnet tool: `dotnet tool install --global GitVersion.Tool`
-
-After installing, run:
-
-```
-npm run version:gitversion
-```
-
-This will update `package.json` to the version computed by GitVersion, then you can run the packaging script.
+2026 (c) LeXtudio Inc. All rights reserved.

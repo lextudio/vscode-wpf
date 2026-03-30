@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import {
+  areProjectOutputsUpToDate,
   findProjectForFile,
   findProjectsInWorkspace,
   getOutputAssemblies,
@@ -10,6 +11,7 @@ import {
 import {
   buildProject,
   buildDesignerTools,
+  checkDesignerCompatibility,
   getDesignerExecutable,
   launchDesigner,
 } from './designerLauncher';
@@ -17,6 +19,7 @@ import { disposeStatusBar, getStatusBarItem, updateStatusBar } from './statusBar
 
 // Per-workspace-folder project selection, keyed by workspace folder path.
 const selectedProjects = new Map<string, string>();
+const previewOperations = new Set<string>();
 
 export function activate(context: vscode.ExtensionContext): void {
   console.log('VS Code WPF extension is now active.');
@@ -40,56 +43,98 @@ export function activate(context: vscode.ExtensionContext): void {
         return; // User cancelled picker or no project found.
       }
 
-      // 2. Check designer binary exists before potentially long build.
-      const exeExists = getDesignerExecutable(context) !== null;
-
-      // 3. Optionally build the project.
-      const cfg = vscode.workspace.getConfiguration('wpf');
-      const autoBuild = cfg.get<boolean>('autoBuildOnPreview', true);
-
-      if (autoBuild) {
-        const result = await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: `Building ${path.basename(projectPath)}…`,
-            cancellable: true,
-          },
-          (_progress, token) => buildProject(projectPath, token)
+      if (previewOperations.has(projectPath)) {
+        vscode.window.showInformationMessage(
+          `Preview is already in progress for ${path.basename(projectPath)}.`
         );
-
-        if (!result.success) {
-          vscode.window
-            .showErrorMessage(
-              `Build failed for ${path.basename(projectPath)}.`,
-              'Show Output'
-            )
-            .then(action => {
-              if (action === 'Show Output') {
-                vscode.commands.executeCommand('workbench.action.output.toggleOutput');
-              }
-            });
-          return;
-        }
-      }
-
-      // 4. Collect assemblies from build output.
-      const assemblies = getOutputAssemblies(projectPath);
-
-      // 5. If designer not found, offer to build it now.
-      if (!exeExists) {
-        const action = await vscode.window.showErrorMessage(
-          'XamlDesigner.exe not found.',
-          'Build Designer Tools',
-          'Cancel'
-        );
-        if (action === 'Build Designer Tools') {
-          await buildDesignerTools(context);
-        }
         return;
       }
 
-      // 6. Launch the designer.
-      launchDesigner(xamlPath, assemblies, context);
+      previewOperations.add(projectPath);
+
+      try {
+
+        // 2. Check designer binary exists before potentially long build.
+        const exeExists = getDesignerExecutable(context) !== null;
+
+        // 2b. Check TFM compatibility between the project and the built designer.
+        const compat = checkDesignerCompatibility(projectPath, context);
+        if (!compat.compatible) {
+          if (compat.canRebuild) {
+            const action = await vscode.window.showWarningMessage(
+              compat.message,
+              'Rebuild Designer',
+              'Launch Anyway'
+            );
+            if (action === 'Rebuild Designer') {
+              await buildDesignerTools(context);
+            } else if (action !== 'Launch Anyway') {
+              return; // Dismissed
+            }
+          } else {
+            // .NET Framework project — can still open without custom type support.
+            const action = await vscode.window.showWarningMessage(
+              compat.message,
+              'Continue',
+              'Cancel'
+            );
+            if (action !== 'Continue') {
+              return;
+            }
+          }
+        }
+
+        // 3. Optionally build the project.
+        const cfg = vscode.workspace.getConfiguration('wpf');
+        const autoBuild = cfg.get<boolean>('autoBuildOnPreview', true);
+        const outputsUpToDate = areProjectOutputsUpToDate(projectPath);
+
+        if (autoBuild && !outputsUpToDate) {
+          const result = await vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: `Building ${path.basename(projectPath)}…`,
+              cancellable: true,
+            },
+            (_progress, token) => buildProject(projectPath, token)
+          );
+
+          if (!result.success) {
+            vscode.window
+              .showErrorMessage(
+                `Build failed for ${path.basename(projectPath)}.`,
+                'Show Output'
+              )
+              .then(action => {
+                if (action === 'Show Output') {
+                  vscode.commands.executeCommand('workbench.action.output.toggleOutput');
+                }
+              });
+            return;
+          }
+        }
+
+        // 4. Collect assemblies from build output.
+        const assemblies = getOutputAssemblies(projectPath);
+
+        // 5. If designer not found, offer to build it now.
+        if (!exeExists) {
+          const action = await vscode.window.showErrorMessage(
+            'XamlDesigner.exe not found.',
+            'Build Designer Tools',
+            'Cancel'
+          );
+          if (action === 'Build Designer Tools') {
+            await buildDesignerTools(context);
+          }
+          return;
+        }
+
+        // 6. Launch the designer.
+        launchDesigner(xamlPath, assemblies, context);
+      } finally {
+        previewOperations.delete(projectPath);
+      }
     })
   );
 
