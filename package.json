@@ -2,7 +2,7 @@
   "name": "vscode-wpf",
   "displayName": "VS Code Tools for WPF",
   "description": "VS Code extension for WPF (.xaml) files with visual designer integration.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "publisher": "lextudio",
   "engines": {
     "vscode": "^1.101.0"
@@ -47,6 +47,8 @@
     "version:gitversion": "powershell -NoProfile -ExecutionPolicy Bypass -File ./update-version.ps1"
   },
   "activationEvents": [
+    "onCommand:wpf.previewXaml",
+    "onCommand:wpf.rebuildRestartDesigner",
     "onCommand:wpf.selectProject",
     "onCommand:wpf.buildDesignerTools"
   ],
@@ -59,6 +61,18 @@
           "light": "images/preview.svg",
           "dark": "images/preview.svg"
         }
+      },
+      {
+        "command": "wpf.rebuildRestartDesigner",
+        "title": "WPF: Rebuild and Restart Designer"
+      },
+      {
+        "command": "wpf.selectProject",
+        "title": "WPF: Select Project"
+      },
+      {
+        "command": "wpf.buildDesignerTools",
+        "title": "WPF: Build Designer Tools"
       }
     ],
     "languages": [
@@ -80,6 +94,17 @@
           "when": "resourceExtname == .xaml",
           "group": "navigation"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "wpf.rebuildRestartDesigner"
+        },
+        {
+          "command": "wpf.selectProject"
+        },
+        {
+          "command": "wpf.buildDesignerTools"
+        }
       ]
     },
     "configuration": {
@@ -99,6 +124,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically build the project before launching the visual designer."
+        },
+        "wpf.livePreviewOnEdit": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a designer session is already running, push XAML editor changes into it automatically without rebuilding."
         },
         "wpf.buildConfiguration": {
           "type": "string",

@@ -15,7 +15,10 @@ import {
   buildDesignerTools,
   checkDesignerCompatibility,
   getDesignerExecutable,
+  hasRunningDesignerSession,
   launchDesigner,
+  pushLiveXamlUpdate,
+  restartDesignerSession,
 } from './designerLauncher';
 import { disposeStatusBar, getStatusBarItem, updateStatusBar } from './statusBar';
 import { getPreviewProjectContext, startLanguageServer, stopLanguageServer } from './languageServer';
@@ -23,6 +26,7 @@ import { getPreviewProjectContext, startLanguageServer, stopLanguageServer } fro
 // Per-workspace-folder project selection, keyed by workspace folder path.
 const selectedProjects = new Map<string, string>();
 const previewOperations = new Set<string>();
+const hotReloadTimers = new Map<string, NodeJS.Timeout>();
 
 export function activate(context: vscode.ExtensionContext): void {
   console.log('VS Code WPF extension is now active.');
@@ -42,6 +46,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       const xamlPath = resource.fsPath;
+      const xamlDocument = await vscode.workspace.openTextDocument(resource);
+      const xamlText = xamlDocument.getText();
       await startLanguageServer(context);
 
       // 0. Verify this is a WPF XAML file, not UWP/WinUI/Uno/Avalonia.
@@ -114,6 +120,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const cfg = vscode.workspace.getConfiguration('wpf');
         const autoBuild = cfg.get<boolean>('autoBuildOnPreview', true);
         const outputsUpToDate = areProjectOutputsUpToDate(projectPath);
+        const hasRunningSession = hasRunningDesignerSession(projectPath);
         const blockingDiagnostics = vscode.languages
           .getDiagnostics(resource)
           .filter(d =>
@@ -127,7 +134,7 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
 
-        if (autoBuild && !outputsUpToDate) {
+        if (autoBuild && !outputsUpToDate && !hasRunningSession) {
           const result = await vscode.window.withProgress(
             {
               location: vscode.ProgressLocation.Notification,
@@ -152,6 +159,12 @@ export function activate(context: vscode.ExtensionContext): void {
           }
         }
 
+        if (hasRunningSession && !outputsUpToDate) {
+          vscode.window.showInformationMessage(
+            'Designer is already running, so Preview sent a live XAML update without rebuilding. Use "WPF: Rebuild and Restart Designer" after code or project changes.'
+          );
+        }
+
         // 4. Collect assemblies from build output.
         const assemblies = getOutputAssemblies(projectPath);
 
@@ -169,10 +182,76 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         // 6. Launch the designer (or send the file to the running instance).
-        launchDesigner(xamlPath, assemblies, context, projectPath);
+        launchDesigner(xamlPath, assemblies, context, projectPath, xamlText);
       } finally {
         previewOperations.delete(projectPath);
       }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf.rebuildRestartDesigner', async (uri?: vscode.Uri) => {
+      const resource = uri ?? vscode.window.activeTextEditor?.document?.uri;
+      if (!resource) {
+        vscode.window.showWarningMessage('No XAML file is currently open.');
+        return;
+      }
+
+      const xamlPath = resource.fsPath;
+      const xamlDocument = await vscode.workspace.openTextDocument(resource);
+      const xamlText = xamlDocument.getText();
+
+      if (!isWpfXaml(xamlPath)) {
+        vscode.window.showErrorMessage('The active file is not recognized as WPF XAML.');
+        return;
+      }
+
+      const previewContext = await getPreviewProjectContext(resource);
+      const projectPath = previewContext?.projectPath ?? await resolveProject(xamlPath);
+      if (!projectPath) {
+        return;
+      }
+
+      if (!isWpfProject(projectPath)) {
+        vscode.window.showErrorMessage(
+          `"${path.basename(projectPath)}" is not a WPF project. ` +
+          'Only projects with <UseWPF>true</UseWPF> (or legacy WPF project references) are supported.'
+        );
+        return;
+      }
+
+      restartDesignerSession(projectPath);
+
+      const result = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Rebuilding ${path.basename(projectPath)} for designer…`,
+          cancellable: true,
+        },
+        (_progress, token) => buildProject(projectPath, token)
+      );
+
+      if (!result.success) {
+        vscode.window.showErrorMessage(
+          `Rebuild failed for ${path.basename(projectPath)}.`
+        );
+        return;
+      }
+
+      const assemblies = getOutputAssemblies(projectPath);
+      if (getDesignerExecutable(context) === null) {
+        const action = await vscode.window.showErrorMessage(
+          'XamlDesigner.exe not found.',
+          'Build Designer Tools',
+          'Cancel'
+        );
+        if (action === 'Build Designer Tools') {
+          await buildDesignerTools(context);
+        }
+        return;
+      }
+
+      launchDesigner(xamlPath, assemblies, context, projectPath, xamlText);
     })
   );
 
@@ -222,6 +301,12 @@ export function activate(context: vscode.ExtensionContext): void {
     updateStatusBar(editor, project ?? null);
   }
 
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument(event => {
+      void scheduleHotReload(event.document);
+    })
+  );
+
   // -------------------------------------------------------------------------
   // Hover provider — XAML symbol info.
   // -------------------------------------------------------------------------
@@ -243,6 +328,10 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export async function deactivate(): Promise<void> {
+  for (const timer of hotReloadTimers.values()) {
+    clearTimeout(timer);
+  }
+  hotReloadTimers.clear();
   await stopLanguageServer();
   disposeStatusBar();
 }
@@ -315,4 +404,53 @@ function getCachedProject(filePath: string): string | undefined {
 function getWorkspaceFolderKey(filePath: string): string {
   const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
   return folder?.uri.fsPath ?? path.dirname(filePath);
+}
+
+async function scheduleHotReload(document: vscode.TextDocument): Promise<void> {
+  if (document.uri.scheme !== 'file' || document.languageId !== 'xaml') {
+    return;
+  }
+
+  if (!isWpfXaml(document.uri.fsPath)) {
+    return;
+  }
+
+  const cfg = vscode.workspace.getConfiguration('wpf');
+  const livePreviewOnEdit = cfg.get<boolean>('livePreviewOnEdit', true);
+  if (!livePreviewOnEdit) {
+    return;
+  }
+
+  const key = document.uri.toString();
+  const existing = hotReloadTimers.get(key);
+  if (existing) {
+    clearTimeout(existing);
+  }
+
+  hotReloadTimers.set(key, setTimeout(() => {
+    hotReloadTimers.delete(key);
+    void pushHotReload(document);
+  }, 300));
+}
+
+async function pushHotReload(document: vscode.TextDocument): Promise<void> {
+  const resource = document.uri;
+  const xamlPath = resource.fsPath;
+  const previewContext = await getPreviewProjectContext(resource);
+  const projectPath = previewContext?.projectPath ?? getCachedProject(xamlPath) ?? await findProjectForFile(xamlPath);
+  if (!projectPath || !hasRunningDesignerSession(projectPath)) {
+    return;
+  }
+
+  const blockingDiagnostics = vscode.languages
+    .getDiagnostics(resource)
+    .filter(d =>
+      d.severity === vscode.DiagnosticSeverity.Error &&
+      (d.source === 'MSBuildWorkspace' || d.source === 'AXSG.Semantic'));
+
+  if (blockingDiagnostics.length > 0) {
+    return;
+  }
+
+  pushLiveXamlUpdate(projectPath, xamlPath, document.getText());
 }

@@ -389,3 +389,199 @@ Built by a future `build-language-server` script alongside the designer build, o
 
 - **XAML Hot Reload**: Bridge Phase 3 — language server pushes XAML text changes to the running XamlDesigner process via the named pipe, enabling live preview without explicit save.
 - **Visual designer round-trip**: Designer property edits update the XAML document in VS Code; language server re-analyses in real time.
+
+---
+
+## WPF Hot Reload Strategy
+
+### Core approach
+
+WPF hot reload in this extension should use a **hybrid model**, not a pure language-server model and not a rebuild-on-every-edit model.
+
+The designer will continue to load the **last known good compiled project artifacts** for:
+
+- custom controls
+- converters
+- markup extensions
+- attached properties
+- design-time metadata
+- referenced project and NuGet assemblies
+
+The language server becomes the **control plane** that decides:
+
+- which project/file the preview belongs to
+- whether the current XAML is valid enough to apply live
+- whether a rebuild is required before the next preview update
+- whether the designer can stay on the current assembly set and receive only XAML text changes
+
+This keeps WPF type fidelity while still allowing fast live updates for ordinary XAML edits.
+
+### Why not language-server-only
+
+The language server can resolve project context, diagnostics, and symbol information, but it cannot replace the runtime/type-loading role of compiled assemblies inside the WPF designer host.
+
+The XamlDesigner process needs real CLR types and metadata to:
+
+- instantiate custom controls
+- resolve referenced assemblies
+- apply resources and styles
+- inspect design-time properties
+- support drag/drop and property editing against real object instances
+
+Therefore, compiled outputs remain required as the **assembly baseline** for preview.
+
+### Session model
+
+The preview pipeline should maintain one long-lived designer session per project.
+
+Each session has:
+
+- `projectPath`
+- `pipeName`
+- `designerProcess`
+- `baselineAssemblySet`
+- `baselineBuildStamp`
+- `openXamlFiles`
+- `lastKnownGoodXamlText` per document
+
+The baseline assembly set is updated only after a successful build. Between builds, the language server may continue sending in-memory XAML updates to the running designer.
+
+### Update flow
+
+#### Initial preview
+
+1. Resolve preview project via the language server.
+2. Verify a usable baseline assembly set exists.
+3. If not, build the project.
+4. Launch the designer with the compiled assemblies.
+5. Open the target XAML file in the running designer session.
+
+#### Live XAML update
+
+1. User edits XAML in VS Code.
+2. Language server re-analyzes the in-memory document.
+3. If the edit is XAML-only and diagnostics are acceptable:
+   - send the current in-memory XAML text to the designer session
+   - designer reloads the design surface from text without requiring a project rebuild
+4. If the edit is not safe to apply live:
+   - keep the designer on the last known good state
+   - surface diagnostics in VS Code
+
+#### Rebuild-required update
+
+1. A change affects compiled type shape or assembly output.
+2. Mark the preview session as requiring rebuild.
+3. On the next preview refresh:
+   - build the project
+   - update the baseline assembly set
+   - ask the designer to reload against the new baseline
+
+### Decision matrix
+
+| Change type | Rebuild required | Live update allowed | Notes |
+|---|---|---|---|
+| Text/property/layout changes in `.xaml` | No | Yes | Preferred hot path |
+| Resource value changes in same XAML document | Usually no | Yes | Safe if no new CLR type dependency is introduced |
+| Adding/removing controls already available in loaded assemblies | No | Yes | Standard live path |
+| Changing namespace mappings to already-loaded assemblies | Usually no | Yes | Language server should validate first |
+| Changing `x:Class` or root CLR type | Yes | No | Affects generated/runtime type relationship |
+| Editing code-behind | Yes | No | Requires new assembly output |
+| Editing custom control source | Yes | No | Designer needs rebuilt type |
+| Editing converters / markup extensions / attached-property code | Yes | No | Requires rebuilt assembly |
+| Editing project references / NuGet dependencies | Yes | No | Assembly closure changed |
+| Changing build properties affecting generated output | Yes | No | Baseline must be replaced |
+
+### Language server responsibilities
+
+The language server should be extended from simple project-context lookup to explicit preview readiness evaluation.
+
+Recommended custom request:
+
+`axsg/preview/readiness`
+
+Suggested response shape:
+
+```json
+{
+  "projectPath": "C:\\repo\\sample\\sample.csproj",
+  "filePath": "C:\\repo\\sample\\MainWindow.xaml",
+  "canApplyLive": true,
+  "requiresRebuild": false,
+  "hasBlockingDiagnostics": false,
+  "reason": null
+}
+```
+
+The extension should use this request before deciding whether to:
+
+- push live XAML text to the running designer
+- reuse the current baseline assembly set
+- perform a real build
+- block preview and show diagnostics
+
+### Designer transport changes
+
+The current named-pipe transport only opens a file path in the running designer. It should be extended to support message kinds.
+
+Recommended pipe commands:
+
+- `openFile`
+- `applyXamlText`
+- `reloadFromDisk`
+- `reloadAssemblies`
+- `ping`
+
+Suggested message envelope:
+
+```json
+{
+  "command": "applyXamlText",
+  "filePath": "C:\\repo\\sample\\MainWindow.xaml",
+  "xamlText": "<Window ... />"
+}
+```
+
+This avoids coupling hot reload to disk writes and allows the designer to preview unsaved editor content.
+
+### Last-known-good behavior
+
+The preview should never thrash or blank unnecessarily during normal editing.
+
+Rules:
+
+- if the current XAML text is temporarily invalid, keep rendering the last known good design surface
+- continue surfacing diagnostics in VS Code
+- resume live updates automatically once the document becomes valid again
+- only replace the baseline assembly set after a successful build
+
+This matches the best part of AXSG’s live tooling model: the editor can move through invalid intermediate states without destroying preview continuity.
+
+### Implementation phases
+
+#### Phase 3A — live XAML text push
+
+- extend named-pipe protocol from `open file path` to structured commands
+- add `applyXamlText` handling in XamlDesigner
+- keep baseline assemblies fixed for the session
+- update preview from unsaved XAML text when language server reports `canApplyLive = true`
+
+#### Phase 3B — readiness-based rebuild gating
+
+- add `axsg/preview/readiness`
+- classify edits into `live`, `blocked`, or `rebuild-required`
+- stop rebuilding on every preview request
+- rebuild only when readiness says the assembly baseline is stale
+
+#### Phase 3C — designer-originated round trip
+
+- when designer changes properties/elements, emit structured mutation or full XAML text back to the extension
+- update the VS Code document without forcing manual save/reopen cycles
+- trigger language-server reanalysis immediately after designer mutations
+
+### Success criteria
+
+- Reopening preview for plain XAML edits does not rebuild the project.
+- Unsaved XAML edits can appear in the running designer.
+- Invalid intermediate edits do not destroy the current preview.
+- Code-behind and custom-control changes correctly force rebuild before preview refresh.
+- The language server is the single authority for preview project context and preview readiness.

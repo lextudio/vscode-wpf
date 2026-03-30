@@ -25,6 +25,13 @@ function getOutputChannel(): vscode.OutputChannel {
 interface DesignerSession {
   proc: cp.ChildProcess;
   pipeName: string;
+  lastXamlPath?: string;
+}
+
+interface DesignerPipeMessage {
+  command: 'openFile' | 'applyXamlText';
+  path: string;
+  xamlText?: string;
 }
 
 // Track one designer session per project path.
@@ -257,12 +264,13 @@ export function launchDesigner(
   xamlPath: string,
   assemblies: string[],
   context: vscode.ExtensionContext,
-  projectPath: string
+  projectPath: string,
+  xamlText?: string
 ): void {
   const existing = activeDesigners.get(projectPath);
   if (existing && !existing.proc.killed) {
-    // Designer already running for this project — just open the file via pipe.
-    sendFileToDesigner(existing.pipeName, xamlPath);
+    existing.lastXamlPath = xamlPath;
+    sendDesignerMessage(existing.pipeName, createDesignerMessage(xamlPath, xamlText));
     return;
   }
 
@@ -308,20 +316,106 @@ export function launchDesigner(
     }
   });
 
-  activeDesigners.set(projectPath, { proc, pipeName });
+  activeDesigners.set(projectPath, { proc, pipeName, lastXamlPath: xamlPath });
+
+  if (xamlText) {
+    void sendDesignerMessageWithRetry(pipeName, createDesignerMessage(xamlPath, xamlText));
+  }
 }
 
-/**
- * Send a XAML file path to a running designer instance via its named pipe.
- * The designer opens the file and brings its window to the foreground.
- */
-function sendFileToDesigner(pipeName: string, xamlPath: string): void {
+export function hasRunningDesignerSession(projectPath: string): boolean {
+  const session = activeDesigners.get(projectPath);
+  return !!session && !session.proc.killed;
+}
+
+export function pushLiveXamlUpdate(projectPath: string, xamlPath: string, xamlText: string): void {
+  const session = activeDesigners.get(projectPath);
+  if (!session || session.proc.killed) {
+    return;
+  }
+
+  session.lastXamlPath = xamlPath;
+  sendDesignerMessage(session.pipeName, createDesignerMessage(xamlPath, xamlText));
+}
+
+export function restartDesignerSession(projectPath: string): void {
+  const session = activeDesigners.get(projectPath);
+  if (!session) {
+    return;
+  }
+
+  try {
+    if (!session.proc.killed) {
+      session.proc.kill();
+    }
+  } catch {
+    // Best effort: remove stale session even if the process is already gone.
+  }
+
+  activeDesigners.delete(projectPath);
+}
+
+function createDesignerMessage(xamlPath: string, xamlText?: string): DesignerPipeMessage {
+  return xamlText
+    ? { command: 'applyXamlText', path: xamlPath, xamlText }
+    : { command: 'openFile', path: xamlPath };
+}
+
+function sendDesignerMessage(pipeName: string, message: DesignerPipeMessage): void {
   const pipePath = `\\\\.\\pipe\\${pipeName}`;
   const client = net.createConnection(pipePath, () => {
-    client.write(xamlPath + '\n', () => client.end());
+    client.write(JSON.stringify(message), () => client.end());
   });
   client.on('error', (err: Error) => {
-    vscode.window.showErrorMessage(`Failed to send file to running designer: ${err.message}`);
+    vscode.window.showErrorMessage(`Failed to send command to running designer: ${err.message}`);
+  });
+}
+
+async function sendDesignerMessageWithRetry(
+  pipeName: string,
+  message: DesignerPipeMessage,
+  attempts = 12,
+  delayMs = 250
+): Promise<void> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await trySendDesignerMessage(pipeName, message);
+      return;
+    } catch {
+      if (attempt === attempts - 1) {
+        vscode.window.showWarningMessage(
+          'The designer launched, but live XAML sync did not connect. Preview is showing the last saved file contents.'
+        );
+        return;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+function trySendDesignerMessage(pipeName: string, message: DesignerPipeMessage): Promise<void> {
+  const pipePath = `\\\\.\\pipe\\${pipeName}`;
+  return new Promise((resolve, reject) => {
+    const client = net.createConnection(pipePath, () => {
+      client.write(JSON.stringify(message), err => {
+        if (err) {
+          reject(err);
+          client.destroy();
+          return;
+        }
+
+        client.end();
+      });
+    });
+
+    client.on('end', () => resolve());
+    client.on('close', hadError => {
+      if (!hadError) {
+        resolve();
+      }
+    });
+    client.on('error', reject);
   });
 }
 
