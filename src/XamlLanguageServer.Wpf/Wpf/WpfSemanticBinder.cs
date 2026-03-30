@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using XamlToCSharpGenerator.Core.Models;
-using XamlToCSharpGenerator.Core.Models.Resolved;
 using XamlToCSharpGenerator.Framework.Abstractions;
 
 namespace XamlLanguageServer.Wpf.Wpf;

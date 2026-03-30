@@ -9,6 +9,14 @@ import {
 } from 'vscode-languageclient/node';
 
 let client: LanguageClient | undefined;
+let log: vscode.OutputChannel | undefined;
+
+function getLog(): vscode.OutputChannel {
+  if (!log) {
+    log = vscode.window.createOutputChannel('WPF Extension');
+  }
+  return log;
+}
 
 /**
  * Start the WPF XAML language server if the server binary exists.
@@ -21,12 +29,16 @@ export async function startLanguageServer(context: vscode.ExtensionContext): Pro
 
   const serverExe = resolveServerExecutable(context);
   if (!serverExe) {
-    // Binary not yet built — silently skip; user can run "WPF: Build Designer Tools"
-    // which also builds the language server.
+    getLog().appendLine('[Language Server] Binary not found in tools/XamlLanguageServer/ — run "WPF: Build Language Server" to build it.');
     return;
   }
 
+  getLog().appendLine(`[Language Server] Starting: ${serverExe}`);
+
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (workspaceRoot) {
+    getLog().appendLine(`[Language Server] Workspace: ${workspaceRoot}`);
+  }
 
   const serverOptions: ServerOptions = {
     command: serverExe,
@@ -35,7 +47,6 @@ export async function startLanguageServer(context: vscode.ExtensionContext): Pro
   };
 
   const clientOptions: LanguageClientOptions = {
-    // Only activate for XAML files that are WPF (validated before reaching the LSP).
     documentSelector: [{ scheme: 'file', language: 'xaml' }],
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher('**/*.xaml'),
@@ -50,16 +61,31 @@ export async function startLanguageServer(context: vscode.ExtensionContext): Pro
     clientOptions
   );
 
+  client.onDidChangeState(e => {
+    getLog().appendLine(`[Language Server] State: ${stateLabel(e.oldState)} → ${stateLabel(e.newState)}`);
+  });
+
   context.subscriptions.push(client);
-  await client.start();
+
+  try {
+    await client.start();
+    getLog().appendLine('[Language Server] Ready.');
+  } catch (err) {
+    getLog().appendLine(`[Language Server] Failed to start: ${err}`);
+    vscode.window.showErrorMessage(`WPF XAML Language Server failed to start. See "WPF Extension" output channel.`);
+    client = undefined;
+  }
 }
 
 /** Stop the language server (called on extension deactivate). */
 export async function stopLanguageServer(): Promise<void> {
   if (client) {
+    getLog().appendLine('[Language Server] Stopping.');
     await client.stop();
     client = undefined;
   }
+  log?.dispose();
+  log = undefined;
 }
 
 /**
@@ -68,6 +94,7 @@ export async function stopLanguageServer(): Promise<void> {
  */
 function resolveServerExecutable(context: vscode.ExtensionContext): string | null {
   const toolsDir = path.join(context.extensionPath, 'tools', 'XamlLanguageServer');
+  getLog().appendLine(`[Language Server] Looking for binary in: ${toolsDir}`);
 
   for (const name of ['wpf-xaml-ls.exe', 'wpf-xaml-ls.dll']) {
     const candidate = path.join(toolsDir, name);
@@ -77,4 +104,14 @@ function resolveServerExecutable(context: vscode.ExtensionContext): string | nul
   }
 
   return null;
+}
+
+function stateLabel(state: number): string {
+  // vscode-languageclient State enum: 1=Starting, 2=Running, 3=Stopped
+  switch (state) {
+    case 1: return 'Starting';
+    case 2: return 'Running';
+    case 3: return 'Stopped';
+    default: return `Unknown(${state})`;
+  }
 }

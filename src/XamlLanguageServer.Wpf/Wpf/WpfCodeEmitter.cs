@@ -1,4 +1,4 @@
-using XamlToCSharpGenerator.Core.Models.Resolved;
+using XamlToCSharpGenerator.Core.Models;
 using XamlToCSharpGenerator.Framework.Abstractions;
 
 namespace XamlLanguageServer.Wpf.Wpf;
