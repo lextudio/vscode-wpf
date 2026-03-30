@@ -5,10 +5,28 @@
   "version": "0.9.0",
   "publisher": "lextudio",
   "engines": {
-    "vscode": "^1.50.0"
+    "vscode": "^1.76.0"
   },
   "main": "out/extension.js",
   "icon": "logo.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lextudio/vscode-wpf.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lextudio/vscode-wpf/issues"
+  },
+  "homepage": "https://github.com/lextudio/vscode-wpf#readme",
+  "license": "MIT",
+  "author": "LeXtudio",
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "wpf",
+    "xaml",
+    "designer"
+  ],
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
@@ -41,8 +59,12 @@
     "languages": [
       {
         "id": "xaml",
-        "aliases": ["XAML"],
-        "extensions": [".xaml"],
+        "aliases": [
+          "XAML"
+        ],
+        "extensions": [
+          ".xaml"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -87,10 +109,13 @@
     }
   },
   "devDependencies": {
-    "typescript": "^6.0.2",
     "@types/node": "^25.5.0",
     "@types/vscode": "^1.76.0",
     "@vscode/test-electron": "^2.5.2",
-    "esbuild": "^0.18.11"
+    "esbuild": "^0.18.11",
+    "typescript": "^6.0.2"
+  },
+  "dependencies": {
+    "sharp": "^0.34.5"
   }
 }
