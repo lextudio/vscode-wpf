@@ -1,3 +1,6 @@
 [submodule "external/WpfDesigner"]
 	path = external/WpfDesigner
 	url = https://github.com/icsharpcode/WpfDesigner
+[submodule "external/XamlToCSharpGenerator"]
+	path = external/XamlToCSharpGenerator
+	url = https://github.com/lextudio/XamlToCSharpGenerator.git

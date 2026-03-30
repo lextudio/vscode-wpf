@@ -18,6 +18,7 @@ import {
   launchDesigner,
 } from './designerLauncher';
 import { disposeStatusBar, getStatusBarItem, updateStatusBar } from './statusBar';
+import { startLanguageServer, stopLanguageServer } from './languageServer';
 
 // Per-workspace-folder project selection, keyed by workspace folder path.
 const selectedProjects = new Map<string, string>();
@@ -25,6 +26,9 @@ const previewOperations = new Set<string>();
 
 export function activate(context: vscode.ExtensionContext): void {
   console.log('VS Code WPF extension is now active.');
+
+  // Start the WPF XAML language server (no-op if binary not yet built).
+  startLanguageServer(context);
 
   // -------------------------------------------------------------------------
   // Command: wpf.previewXaml
@@ -150,8 +154,8 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
 
-        // 6. Launch the designer.
-        launchDesigner(xamlPath, assemblies, context);
+        // 6. Launch the designer (or send the file to the running instance).
+        launchDesigner(xamlPath, assemblies, context, projectPath);
       } finally {
         previewOperations.delete(projectPath);
       }
@@ -224,7 +228,8 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
-export function deactivate(): void {
+export async function deactivate(): Promise<void> {
+  await stopLanguageServer();
   disposeStatusBar();
 }
 

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- net10.0-windows so WPF assemblies (PresentationFramework etc.) are available
+         in the Roslyn compilation loaded from the target project. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>wpf-xaml-ls</AssemblyName>
+    <RootNamespace>XamlLanguageServer.Wpf</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- AXSG language service infrastructure (from submodule) -->
+    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.LanguageService\XamlToCSharpGenerator.LanguageService.csproj" />
+    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.LanguageServer\XamlToCSharpGenerator.LanguageServer.csproj" />
+    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Framework.Abstractions\XamlToCSharpGenerator.Framework.Abstractions.csproj" />
+    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Core\XamlToCSharpGenerator.Core.csproj" />
+  </ItemGroup>
+</Project>

@@ -136,13 +136,25 @@ getDesignerExecutable(context: vscode.ExtensionContext): string | null
 - For non-SDK (legacy) `.csproj`, fall back to `msbuild.exe /t:Build`.
 - On failure, show an error notification with a link to the output channel.
 
-**Launch step:**
+**Launch step — persistent designer session:**
 
-- Resolve `XamlDesigner.exe` from:
-  1. `wpf.designerExecutable` user setting (override).
-  2. `<extensionPath>/tools/XamlDesigner/XamlDesigner.exe` (default).
-- Spawn the process detached (designer lives independently of VS Code).
-- Track the spawned PID to avoid double-launching for the same file.
+One designer process is kept alive **per project**. This avoids the startup overhead on every preview request.
+
+1. On first preview for a project:
+   - Generate a unique named pipe name: `XamlDesigner-<timestamp>`.
+   - Spawn `XamlDesigner.exe --pipe <pipeName> <file.xaml> [assemblies…]` detached.
+   - Store `{ proc, pipeName }` in `activeDesigners` keyed by project path.
+2. On subsequent previews for the same project (designer already running):
+   - Connect to `\\.\pipe\<pipeName>` via `net.createConnection`.
+   - Write the XAML file path as a newline-terminated string.
+   - The designer opens/activates the file and brings its window to the foreground.
+3. When the designer process exits, the session is removed and the next preview re-launches it.
+
+**XamlDesigner pipe server (`App.xaml.cs`):**
+
+- Parses `--pipe <name>` from command-line args and strips it before passing args to `ProcessPaths`.
+- Starts a background thread (`IsBackground = true`) running `RunPipeServer(pipeName)`.
+- The loop creates a `NamedPipeServerStream` (`PipeOptions.CurrentUserOnly`), waits for a connection, reads one line (the file path), then dispatches `Shell.Instance.Open(path)` + `MainWindow.Activate()` on the UI thread, and loops to accept the next connection.
 
 ### 4. Status Bar (`src/statusBar.ts`)
 
@@ -309,8 +321,71 @@ Do NOT ignore `tools/**` — the pre-built designer binaries must be included.
 
 ---
 
+---
+
+## Language Server (`src/XamlLanguageServer.Wpf/`)
+
+A WPF XAML language server built by adapting the [XamlToCSharpGenerator (AXSG)](https://github.com/wieslawsoltes/XamlToCSharpGenerator) infrastructure (submodule at `external/XamlToCSharpGenerator`).
+
+### Architecture
+
+```
+VS Code extension (TypeScript)
+  └─ vscode-languageclient  ──stdio──►  wpf-xaml-ls.exe
+                                              │
+                                    XamlLanguageServiceEngine
+                                    (AXSG, WpfFrameworkProfile)
+                                              │
+                              ┌───────────────┴───────────────┐
+                              │  XamlCompilerAnalysisService   │
+                              │  (parse → bind → diagnostics)  │
+                              └───────────────────────────────┘
+                                              │
+                                    20+ LSP analysis services
+                                    (completions, hover, go-to-def,
+                                     semantic tokens, rename, …)
+```
+
+### AXSG reuse strategy
+
+AXSG defines a pluggable `IXamlFrameworkProfile` interface. The Avalonia adaptation (`XamlToCSharpGenerator.Avalonia`) implements it for Avalonia. `XamlLanguageServer.Wpf` implements the same interface for WPF:
+
+| Interface | WPF implementation | Notes |
+|---|---|---|
+| `IXamlFrameworkProfile` | `WpfFrameworkProfile` | Singleton, assembles the other pieces |
+| `IXamlFrameworkBuildContract` | `WpfFrameworkBuildContract` | `Page` / `ApplicationDefinition` item groups |
+| `IXamlFrameworkTransformProvider` | `WpfFrameworkTransformProvider` | No-op — WPF has no transform rule files |
+| `IXamlFrameworkSemanticBinder` | `WpfSemanticBinder` | Phase 1: stub; Phase 2: full `XmlnsDefinitionAttribute` resolution |
+| `IXamlFrameworkEmitter` | `WpfCodeEmitter` | Stub — WPF codegen is handled by MSBuild targets |
+
+`XamlLanguageServiceEngine` was extended with a `(ICompilationProvider, IXamlFrameworkProfile)` constructor overload (contributed back into the AXSG submodule) so any profile can be injected without changing the rest of the engine.
+
+### WPF namespace conventions recognised
+
+| URI | Prefix | Source |
+|---|---|---|
+| `http://schemas.microsoft.com/winfx/2006/xaml/presentation` | *(default)* | PresentationFramework |
+| `http://schemas.microsoft.com/winfx/2006/xaml` | `x:` | XAML language |
+| `http://schemas.microsoft.com/expression/blend/2008` | `d:` | Blend design-time |
+| `http://schemas.openxmlformats.org/markup-compatibility/2006` | `mc:` | Markup compatibility |
+| `clr-namespace:…` | any | Custom CLR types |
+
+### Output location
+
+Built by a future `build-language-server` script alongside the designer build, output to `tools/XamlLanguageServer/wpf-xaml-ls.exe`. The extension starts it on activation via stdio transport (silent no-op if binary not yet built).
+
+### Phase roadmap
+
+| Phase | Scope |
+|---|---|
+| **1 (current)** | XML parse errors, namespace validation, folding, formatting, document symbols |
+| **2** | Full `XmlnsDefinitionAttribute` scanning → type completions, hover, go-to-definition, semantic tokens |
+| **3** | Hot-reload bridge: push edits from the language server to the running WPF designer via the named pipe session |
+| **4** | Visual designer integration: design-time property mutations reflected back in XAML |
+
+---
+
 ## Future Considerations
 
-- **Live XAML sync**: Add an optional file watcher that triggers a designer "Refresh" command via a named pipe or stdout protocol, enabling live preview without manual save.
-- **XAML Hot Reload**: Investigate integrating with .NET Hot Reload for runtime preview.
-- **Web-based preview**: A WebviewPanel-based fallback for non-Windows platforms using a WASM renderer.
+- **XAML Hot Reload**: Bridge Phase 3 — language server pushes XAML text changes to the running XamlDesigner process via the named pipe, enabling live preview without explicit save.
+- **Visual designer round-trip**: Designer property edits update the XAML document in VS Code; language server re-analyses in real time.

@@ -7,7 +7,9 @@
   "engines": {
     "vscode": "^1.76.0"
   },
-  "os": ["win32"],
+  "os": [
+    "win32"
+  ],
   "main": "out/extension.js",
   "icon": "logo.png",
   "repository": {
@@ -117,6 +119,7 @@
     "typescript": "^6.0.2"
   },
   "dependencies": {
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "vscode-languageclient": "^9.0.1"
   }
 }

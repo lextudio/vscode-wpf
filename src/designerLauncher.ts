@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as path from 'path';
 import { parseProject } from './projectDiscovery';
 
@@ -21,8 +22,13 @@ function getOutputChannel(): vscode.OutputChannel {
   return outputChannel;
 }
 
-// Track launched designer processes keyed by XAML file path.
-const activeDesigners = new Map<string, cp.ChildProcess>();
+interface DesignerSession {
+  proc: cp.ChildProcess;
+  pipeName: string;
+}
+
+// Track one designer session per project path.
+const activeDesigners = new Map<string, DesignerSession>();
 
 // ---------------------------------------------------------------------------
 // TFM helpers
@@ -245,11 +251,13 @@ export function getDesignerExecutable(context: vscode.ExtensionContext): string 
 export function launchDesigner(
   xamlPath: string,
   assemblies: string[],
-  context: vscode.ExtensionContext
+  context: vscode.ExtensionContext,
+  projectPath: string
 ): void {
-  const existing = activeDesigners.get(xamlPath);
-  if (existing && !existing.killed) {
-    vscode.window.showInformationMessage(`Designer already open for ${path.basename(xamlPath)}.`);
+  const existing = activeDesigners.get(projectPath);
+  if (existing && !existing.proc.killed) {
+    // Designer already running for this project — just open the file via pipe.
+    sendFileToDesigner(existing.pipeName, xamlPath);
     return;
   }
 
@@ -261,11 +269,13 @@ export function launchDesigner(
     return;
   }
 
-  const args = [xamlPath, ...assemblies];
+  const pipeName = `XamlDesigner-${Date.now()}`;
+  const args = ['--pipe', pipeName, xamlPath, ...assemblies];
   const channel = getOutputChannel();
   channel.appendLine(`\n=== Launching Designer ===`);
-  channel.appendLine(`  Exe  : ${exe}`);
-  channel.appendLine(`  Args : ${args.join('\n         ')}\n`);
+  channel.appendLine(`  Exe      : ${exe}`);
+  channel.appendLine(`  Pipe     : ${pipeName}`);
+  channel.appendLine(`  Args     : ${args.slice(2).join('\n             ')}\n`);
 
   // NewFileTemplate.xaml is read with a bare relative path inside the designer —
   // working directory must be the exe's own folder.
@@ -283,17 +293,31 @@ export function launchDesigner(
 
   proc.on('error', (err: Error) => {
     vscode.window.showErrorMessage(`Failed to launch designer: ${err.message}`);
-    activeDesigners.delete(xamlPath);
+    activeDesigners.delete(projectPath);
   });
 
   proc.on('close', (code: number | null) => {
-    activeDesigners.delete(xamlPath);
+    activeDesigners.delete(projectPath);
     if (code !== 0 && code !== null) {
-      channel.appendLine(`Designer exited with code ${code} for ${path.basename(xamlPath)}.`);
+      channel.appendLine(`Designer exited with code ${code}.`);
     }
   });
 
-  activeDesigners.set(xamlPath, proc);
+  activeDesigners.set(projectPath, { proc, pipeName });
+}
+
+/**
+ * Send a XAML file path to a running designer instance via its named pipe.
+ * The designer opens the file and brings its window to the foreground.
+ */
+function sendFileToDesigner(pipeName: string, xamlPath: string): void {
+  const pipePath = `\\\\.\\pipe\\${pipeName}`;
+  const client = net.createConnection(pipePath, () => {
+    client.write(xamlPath + '\n', () => client.end());
+  });
+  client.on('error', (err: Error) => {
+    vscode.window.showErrorMessage(`Failed to send file to running designer: ${err.message}`);
+  });
 }
 
 // ---------------------------------------------------------------------------
