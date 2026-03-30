@@ -4,3 +4,6 @@
 [submodule "external/XamlToCSharpGenerator"]
 	path = external/XamlToCSharpGenerator
 	url = https://github.com/lextudio/XamlToCSharpGenerator.git
+[submodule "external/SharpDbg"]
+	path = external/SharpDbg
+	url = https://github.com/lextudio/SharpDbg.git
