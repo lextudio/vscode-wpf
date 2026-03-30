@@ -4,10 +4,13 @@ src/**
 .git/**
 sample/**
 tests/**
+external/**
+scripts/**
 *.ts
 *.map
 tsconfig.json
 .vscodeignore
 .gitignore
 README.md
+DESIGN.md
 .github/**

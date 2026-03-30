@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"^/c/Users/lextudio/source/repos/vscode-wpf/external/WpfDesigner/[^/]+$\")"
+    ]
+  }
+}
