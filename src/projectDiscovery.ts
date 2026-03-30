@@ -9,6 +9,12 @@ export interface ProjectInfo {
   outputPath: string;
 }
 
+export interface LaunchTargetInfo {
+  program: string;
+  args: string[];
+  cwd: string;
+}
+
 export function isCSharpDevKitInstalled(): boolean {
   return vscode.extensions.getExtension('ms-dotnettools.csdevkit') !== undefined;
 }
@@ -238,6 +244,60 @@ export function areProjectOutputsUpToDate(projectPath: string): boolean {
   }
 
   return newestInputTime > 0 && newestInputTime <= newestOutputTime;
+}
+
+/**
+ * Resolve the best launch target for a WPF project output.
+ * For modern SDK-style WPF projects this is usually the generated `.exe`.
+ * If only a `.dll` exists, launch through `dotnet`.
+ */
+export function getLaunchTarget(projectPath: string, dotnetPath = 'dotnet'): LaunchTargetInfo | null {
+  const { projectName, outputPath } = parseProject(projectPath);
+  if (!fs.existsSync(outputPath)) {
+    return null;
+  }
+
+  const exePath = path.join(outputPath, `${projectName}.exe`);
+  if (fs.existsSync(exePath)) {
+    return {
+      program: exePath,
+      args: [],
+      cwd: path.dirname(projectPath),
+    };
+  }
+
+  const dllPath = path.join(outputPath, `${projectName}.dll`);
+  if (fs.existsSync(dllPath)) {
+    return {
+      program: dotnetPath,
+      args: [dllPath],
+      cwd: path.dirname(projectPath),
+    };
+  }
+
+  const fallbackExe = fs.readdirSync(outputPath)
+    .filter(f => f.toLowerCase().endsWith('.exe'))
+    .map(f => path.join(outputPath, f))[0];
+  if (fallbackExe) {
+    return {
+      program: fallbackExe,
+      args: [],
+      cwd: path.dirname(projectPath),
+    };
+  }
+
+  const fallbackDll = fs.readdirSync(outputPath)
+    .filter(f => f.toLowerCase().endsWith('.dll') && !f.toLowerCase().endsWith('.resources.dll'))
+    .map(f => path.join(outputPath, f))[0];
+  if (fallbackDll) {
+    return {
+      program: dotnetPath,
+      args: [fallbackDll],
+      cwd: path.dirname(projectPath),
+    };
+  }
+
+  return null;
 }
 
 /**

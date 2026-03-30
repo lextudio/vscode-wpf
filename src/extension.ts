@@ -22,6 +22,12 @@ import {
 } from './designerLauncher';
 import { disposeStatusBar, getStatusBarItem, updateStatusBar } from './statusBar';
 import { getPreviewProjectContext, startLanguageServer, stopLanguageServer } from './languageServer';
+import {
+  hasRunningRuntimeSession,
+  pushRuntimeXamlUpdate,
+  registerRuntimeHotReload,
+  startRuntimeHotReloadSession,
+} from './runtimeHotReload';
 
 // Per-workspace-folder project selection, keyed by workspace folder path.
 const selectedProjects = new Map<string, string>();
@@ -33,6 +39,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Start the WPF XAML language server (no-op if binary not yet built).
   startLanguageServer(context);
+  registerRuntimeHotReload(context);
 
   // -------------------------------------------------------------------------
   // Command: wpf.previewXaml
@@ -259,6 +266,47 @@ export function activate(context: vscode.ExtensionContext): void {
   // Command: wpf.selectProject
   // -------------------------------------------------------------------------
   context.subscriptions.push(
+    vscode.commands.registerCommand('wpf.debugHotReload', async (uri?: vscode.Uri) => {
+      const resource = uri ?? vscode.window.activeTextEditor?.document?.uri;
+      if (!resource) {
+        vscode.window.showWarningMessage('No XAML file is currently open.');
+        return;
+      }
+
+      const xamlPath = resource.fsPath;
+      if (!isWpfXaml(xamlPath)) {
+        vscode.window.showErrorMessage('The active file is not recognized as WPF XAML.');
+        return;
+      }
+
+      await startLanguageServer(context);
+
+      const previewContext = await getPreviewProjectContext(resource);
+      const projectPath = previewContext?.projectPath ?? await resolveProject(xamlPath);
+      if (!projectPath) {
+        return;
+      }
+
+      if (!isWpfProject(projectPath)) {
+        vscode.window.showErrorMessage(
+          `"${path.basename(projectPath)}" is not a WPF project. ` +
+          'Only projects with <UseWPF>true</UseWPF> (or legacy WPF project references) are supported.'
+        );
+        return;
+      }
+
+      const started = await startRuntimeHotReloadSession(context, projectPath, xamlPath);
+      if (!started) {
+        return;
+      }
+
+      vscode.window.showInformationMessage(
+        `Started WPF hot reload session for ${path.basename(projectPath)}.`
+      );
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('wpf.selectProject', async () => {
       const projects = await findProjectsInWorkspace();
       const picked = await showProjectPicker(projects);
@@ -417,7 +465,8 @@ async function scheduleHotReload(document: vscode.TextDocument): Promise<void> {
 
   const cfg = vscode.workspace.getConfiguration('wpf');
   const livePreviewOnEdit = cfg.get<boolean>('livePreviewOnEdit', true);
-  if (!livePreviewOnEdit) {
+  const liveRuntimeOnEdit = cfg.get<boolean>('liveRuntimeOnEdit', true);
+  if (!livePreviewOnEdit && !liveRuntimeOnEdit) {
     return;
   }
 
@@ -438,7 +487,7 @@ async function pushHotReload(document: vscode.TextDocument): Promise<void> {
   const xamlPath = resource.fsPath;
   const previewContext = await getPreviewProjectContext(resource);
   const projectPath = previewContext?.projectPath ?? getCachedProject(xamlPath) ?? await findProjectForFile(xamlPath);
-  if (!projectPath || !hasRunningDesignerSession(projectPath)) {
+  if (!projectPath) {
     return;
   }
 
@@ -449,6 +498,17 @@ async function pushHotReload(document: vscode.TextDocument): Promise<void> {
       (d.source === 'MSBuildWorkspace' || d.source === 'AXSG.Semantic'));
 
   if (blockingDiagnostics.length > 0) {
+    return;
+  }
+
+  if (hasRunningRuntimeSession(projectPath)) {
+    const applied = await pushRuntimeXamlUpdate(projectPath, xamlPath, document.getText());
+    if (applied) {
+      return;
+    }
+  }
+
+  if (!hasRunningDesignerSession(projectPath)) {
     return;
   }
 
