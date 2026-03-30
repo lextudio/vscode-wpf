@@ -1,0 +1,59 @@
+{
+  "name": "vscode-wpf",
+  "displayName": "VS Code Tools for WPF",
+  "description": "Basic VS Code extension for WPF (.xaml) files with visual designer integration.",
+  "version": "0.9.0",
+  "publisher": "lextudio",
+  "engines": {
+    "vscode": "^1.50.0"
+  },
+  "main": "out/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js --sourcemap",
+    "watch:build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js --sourcemap --watch",
+    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./publish.ps1",
+    "package:publish:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./publish.ps1 -Publish",
+    "version:git": "powershell -NoProfile -ExecutionPolicy Bypass -File ./update-version.ps1",
+    "version:gitversion": "powershell -NoProfile -ExecutionPolicy Bypass -File ./update-version.ps1"
+  },
+  "activationEvents": [
+    "onLanguage:xaml",
+    "onCommand:wpf.previewXaml"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "wpf.previewXaml",
+        "title": "WPF: Preview XAML"
+      }
+    ],
+    "languages": [
+      {
+        "id": "xaml",
+        "aliases": ["XAML"],
+        "extensions": [".xaml"],
+        "configuration": "./language-configuration.json"
+      }
+    ]
+  ,
+  "menus": {
+    "editor/title": [
+      {
+        "command": "wpf.previewXaml",
+        "when": "resourceExtname == .xaml",
+        "group": "navigation"
+      }
+    ]
+  }
+  },
+  "devDependencies": {
+    "typescript": "^6.0.2",
+    "@types/node": "^25.5.0",
+    "@types/vscode": "^1.76.0",
+    "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.18.11"
+  }
+}
