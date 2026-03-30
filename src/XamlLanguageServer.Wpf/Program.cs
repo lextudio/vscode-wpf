@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using XamlLanguageServer.Wpf.Diagnostics;
 using XamlLanguageServer.Wpf.Wpf;
 using XamlToCSharpGenerator.LanguageService;
 using XamlToCSharpGenerator.LanguageService.Workspace;
@@ -10,10 +11,13 @@ using XamlToCSharpGenerator.LanguageServer.Server;
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
 var workspaceRoot = ParseArg(args, "--workspace");
+Console.Error.WriteLine($"[WPF-LS] Starting. workspaceRoot={workspaceRoot ?? "(null)"}");
+Console.Error.WriteLine($"[WPF-LS] Args: [{string.Join(", ", args)}]");
 var options = new XamlLanguageServiceOptions(workspaceRoot);
 
 using var engine = new XamlLanguageServiceEngine(
-    new DeferredCompilationProvider(static () => new MsBuildCompilationProvider()),
+    new DeferredCompilationProvider(static () =>
+        new DiagnosticCompilationProvider(new MsBuildCompilationProvider())),
     WpfFrameworkProfile.Instance);
 
 using var server = new AxsgLanguageServer(

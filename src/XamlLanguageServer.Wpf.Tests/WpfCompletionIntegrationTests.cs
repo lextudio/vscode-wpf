@@ -42,7 +42,7 @@ public sealed class WpfCompletionIntegrationTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task Completion_InElementContext_ReturnsWpfControlTypes()
+    public async Task Completion_BareFragment_ReturnsWpfControlTypes()
     {
         using var engine = CreateEngine();
         const string xaml = "<Bu";
@@ -57,16 +57,88 @@ public sealed class WpfCompletionIntegrationTests
         Assert.Contains(completions, c => c.Label.EndsWith("Button", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// Real-world scenario: full WPF XAML with explicit xmlns, user types "&lt;Bu"
+    /// inside Grid. Verifies Button is found via the WPF presentation namespace.
+    /// </summary>
     [Fact]
-    public async Task Completion_InElementContext_ReturnsGrid()
+    public async Task Completion_InsideGridInFullDocument_ReturnsButton()
     {
         using var engine = CreateEngine();
-        const string xaml = "<Gr";
+        const string xaml =
+            $"<Window xmlns=\"{PresentationNs}\"\n" +
+            $"        xmlns:x=\"{XamlNs}\"\n" +
+            "        Title=\"Test\" Width=\"800\" Height=\"450\">\n" +
+            "  <Grid>\n" +
+            "    <Bu\n" +
+            "  </Grid>\n" +
+            "</Window>";
 
         await engine.OpenDocumentAsync(TestFileUri, xaml, 1, Options(), CancellationToken.None);
+
         var completions = await engine.GetCompletionsAsync(
             TestFileUri,
-            new SourcePosition(0, 3),
+            new SourcePosition(4, 6),
+            Options(),
+            CancellationToken.None);
+
+        Assert.NotEmpty(completions);
+        Assert.Contains(completions, c => c.Label.EndsWith("Button", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Key test: user types just "&lt;" with no further letters inside Grid of a full WPF document.
+    /// Must return ALL WPF types (Button, TextBlock, Grid, etc.), not just App/MainWindow.
+    /// </summary>
+    [Fact]
+    public async Task Completion_InsideGridInFullDocument_EmptyPrefix_ReturnsAllWpfTypes()
+    {
+        using var engine = CreateEngine();
+        const string xaml =
+            $"<Window xmlns=\"{PresentationNs}\"\n" +
+            $"        xmlns:x=\"{XamlNs}\"\n" +
+            "        Title=\"Test\" Width=\"800\" Height=\"450\">\n" +
+            "  <Grid>\n" +
+            "    <\n" +
+            "  </Grid>\n" +
+            "</Window>";
+
+        await engine.OpenDocumentAsync(TestFileUri, xaml, 1, Options(), CancellationToken.None);
+
+        // cursor right after "<" on line 4, col 5
+        var completions = await engine.GetCompletionsAsync(
+            TestFileUri,
+            new SourcePosition(4, 5),
+            Options(),
+            CancellationToken.None);
+
+        Assert.NotEmpty(completions);
+        // Must include standard WPF types, not just the project's own App/MainWindow
+        Assert.Contains(completions, c => c.Label == "Button");
+        Assert.Contains(completions, c => c.Label == "TextBlock");
+        Assert.Contains(completions, c => c.Label == "Grid");
+        Assert.Contains(completions, c => c.Label == "StackPanel");
+        Assert.Contains(completions, c => c.Label == "TextBox");
+    }
+
+    [Fact]
+    public async Task Completion_InsideGridInFullDocument_ReturnsGrid()
+    {
+        using var engine = CreateEngine();
+        const string xaml =
+            $"<Window xmlns=\"{PresentationNs}\"\n" +
+            $"        xmlns:x=\"{XamlNs}\"\n" +
+            "        Title=\"Test\" Width=\"800\" Height=\"450\">\n" +
+            "  <Grid>\n" +
+            "    <Gr\n" +
+            "  </Grid>\n" +
+            "</Window>";
+
+        await engine.OpenDocumentAsync(TestFileUri, xaml, 1, Options(), CancellationToken.None);
+
+        var completions = await engine.GetCompletionsAsync(
+            TestFileUri,
+            new SourcePosition(4, 6),
             Options(),
             CancellationToken.None);
 
