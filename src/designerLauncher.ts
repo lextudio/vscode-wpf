@@ -205,6 +205,11 @@ export async function buildProject(
     proc.on('close', (code: number | null) => {
       const success = code === 0;
       channel.appendLine(success ? '\nBuild succeeded.' : `\nBuild FAILED (exit code ${code}).`);
+      if (!success && isSdkMissing(output)) {
+        vscode.window.showWarningMessage(
+          'A .NET SDK is required to build this WPF project. Install .NET 10 SDK or set wpf.dotnetPath to a dotnet host that has the SDK.'
+        );
+      }
       resolve({ success, output });
     });
 
@@ -435,6 +440,13 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
       });
     }
   );
+}
+
+function isSdkMissing(output: string): boolean {
+  return /No SDKs were found/i.test(output) ||
+    /A compatible installed \.NET SDK for global\.json version/i.test(output) ||
+    /It was not possible to find any installed \.NET SDKs/i.test(output) ||
+    /The application 'build' does not exist/i.test(output);
 }
 
 // ---------------------------------------------------------------------------

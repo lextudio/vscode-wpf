@@ -5,8 +5,11 @@
   "version": "0.9.0",
   "publisher": "lextudio",
   "engines": {
-    "vscode": "^1.76.0"
+    "vscode": "^1.101.0"
   },
+  "extensionDependencies": [
+    "ms-dotnettools.vscode-dotnet-runtime"
+  ],
   "os": [
     "win32"
   ],
@@ -37,14 +40,13 @@
     "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js --sourcemap",
     "watch:build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js --sourcemap --watch",
     "build-designer": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-designer.ps1",
-    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./publish.ps1",
-    "package:publish:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./publish.ps1 -Publish",
+    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./dist.windows.ps1",
+    "package:publish:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./dist.windows.ps1 -Publish",
+    "publish:marketplace": "powershell -NoProfile -ExecutionPolicy Bypass -File ./publish.ps1",
     "version:git": "powershell -NoProfile -ExecutionPolicy Bypass -File ./update-version.ps1",
     "version:gitversion": "powershell -NoProfile -ExecutionPolicy Bypass -File ./update-version.ps1"
   },
   "activationEvents": [
-    "onLanguage:xaml",
-    "onCommand:wpf.previewXaml",
     "onCommand:wpf.selectProject",
     "onCommand:wpf.buildDesignerTools"
   ],

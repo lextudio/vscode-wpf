@@ -18,7 +18,7 @@ import {
   launchDesigner,
 } from './designerLauncher';
 import { disposeStatusBar, getStatusBarItem, updateStatusBar } from './statusBar';
-import { startLanguageServer, stopLanguageServer } from './languageServer';
+import { getPreviewProjectContext, startLanguageServer, stopLanguageServer } from './languageServer';
 
 // Per-workspace-folder project selection, keyed by workspace folder path.
 const selectedProjects = new Map<string, string>();
@@ -42,6 +42,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       const xamlPath = resource.fsPath;
+      await startLanguageServer(context);
 
       // 0. Verify this is a WPF XAML file, not UWP/WinUI/Uno/Avalonia.
       if (!isWpfXaml(xamlPath)) {
@@ -53,7 +54,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       // 1. Resolve project
-      const projectPath = await resolveProject(xamlPath);
+      const previewContext = await getPreviewProjectContext(resource);
+      const projectPath = previewContext?.projectPath ?? await resolveProject(xamlPath);
       if (!projectPath) {
         return; // User cancelled picker or no project found.
       }
@@ -112,6 +114,18 @@ export function activate(context: vscode.ExtensionContext): void {
         const cfg = vscode.workspace.getConfiguration('wpf');
         const autoBuild = cfg.get<boolean>('autoBuildOnPreview', true);
         const outputsUpToDate = areProjectOutputsUpToDate(projectPath);
+        const blockingDiagnostics = vscode.languages
+          .getDiagnostics(resource)
+          .filter(d =>
+            d.severity === vscode.DiagnosticSeverity.Error &&
+            (d.source === 'MSBuildWorkspace' || d.source === 'AXSG.Semantic'));
+
+        if (blockingDiagnostics.length > 0 && outputsUpToDate) {
+          vscode.window.showErrorMessage(
+            'Preview is blocked because the language server reports XAML/project errors for the current file.'
+          );
+          return;
+        }
 
         if (autoBuild && !outputsUpToDate) {
           const result = await vscode.window.withProgress(

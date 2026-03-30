@@ -7,6 +7,8 @@ import {
   ServerOptions,
   TransportKind,
 } from 'vscode-languageclient/node';
+import { ensureDotnetRuntime, getPreferredDotnetPath } from './dotnetBootstrap';
+import { PreviewProjectContext, requestPreviewProjectContext } from './languageServerProtocol';
 
 let client: LanguageClient | undefined;
 let log: vscode.OutputChannel | undefined;
@@ -27,6 +29,8 @@ export async function startLanguageServer(context: vscode.ExtensionContext): Pro
     return;
   }
 
+  const dotnetPath = await ensureDotnetRuntime();
+
   const serverExe = resolveServerExecutable(context);
   if (!serverExe) {
     getLog().appendLine('[Language Server] Binary not found in tools/XamlLanguageServer/ — run "WPF: Build Language Server" to build it.');
@@ -34,17 +38,27 @@ export async function startLanguageServer(context: vscode.ExtensionContext): Pro
   }
 
   getLog().appendLine(`[Language Server] Starting: ${serverExe}`);
+  if (dotnetPath) {
+    getLog().appendLine(`[Language Server] dotnet host: ${dotnetPath}`);
+  }
 
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (workspaceRoot) {
     getLog().appendLine(`[Language Server] Workspace: ${workspaceRoot}`);
   }
 
-  const serverOptions: ServerOptions = {
-    command: serverExe,
-    args: workspaceRoot ? ['--workspace', workspaceRoot] : [],
-    transport: TransportKind.stdio,
-  };
+  const serverArgs = workspaceRoot ? ['--workspace', workspaceRoot] : [];
+  const serverOptions: ServerOptions = /\.dll$/i.test(serverExe)
+    ? {
+        command: getPreferredDotnetPath(),
+        args: [serverExe, ...serverArgs],
+        transport: TransportKind.stdio,
+      }
+    : {
+        command: serverExe,
+        args: serverArgs,
+        transport: TransportKind.stdio,
+      };
 
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: 'file', language: 'xaml' }],
@@ -86,6 +100,14 @@ export async function stopLanguageServer(): Promise<void> {
   }
   log?.dispose();
   log = undefined;
+}
+
+export function getLanguageServerClient(): LanguageClient | undefined {
+  return client;
+}
+
+export async function getPreviewProjectContext(documentUri: vscode.Uri): Promise<PreviewProjectContext | null> {
+  return requestPreviewProjectContext(client, documentUri);
 }
 
 /**
