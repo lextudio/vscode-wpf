@@ -63,19 +63,49 @@ A build script (`scripts/build-designer.ps1`) compiles the submodule and copies 
 **Exported API:**
 
 ```typescript
+isWpfXaml(xamlPath: string): boolean
+isWpfProject(projectPath: string): boolean
 findProjectForFile(xamlPath: string): Promise<string | null>
-findProjectsInWorkspace(): Promise<ProjectInfo[]>
+findProjectsInWorkspace(): Promise<string[]>
 findSolutionsInWorkspace(): Promise<string[]>
 isCSharpDevKitInstalled(): boolean
-getOutputAssemblies(projectPath: string): Promise<string[]>
+getOutputAssemblies(projectPath: string): string[]
 ```
+
+**WPF variant detection:**
+
+The extension exclusively supports WPF. Two guards enforce this:
+
+`isWpfXaml(xamlPath)` — reads the first 4 KB of the file and inspects namespace declarations:
+
+| Signal | Verdict |
+|---|---|
+| `xmlns="https://github.com/avaloniaui"` or `avaloniaui.net` | Rejected (Avalonia) |
+| `xmlns:x="using:..."` syntax | Rejected (UWP / WinUI / Uno) |
+| `xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"` | Accepted (WPF) |
+| Anything else | Rejected |
+
+`isWpfProject(projectPath)` — reads the `.csproj` and applies:
+
+| Signal | Verdict |
+|---|---|
+| `PackageReference Include="Avalonia"` | Rejected |
+| `PackageReference Include="Uno.WinUI"` / `Uno.UI"` | Rejected |
+| `PackageReference Include="Microsoft.WindowsAppSDK"` | Rejected |
+| `<TargetPlatformIdentifier>UAP</TargetPlatformIdentifier>` | Rejected (UWP) |
+| SDK-style + `<UseWPF>true</UseWPF>` | Accepted |
+| Legacy + WPF type GUID `{60DC8134-…}` or `PresentationFramework` reference | Accepted |
+| SDK-style without `<UseWPF>true</UseWPF>` | Rejected |
+
+Both `findProjectForFile` and `findProjectsInWorkspace` call `isWpfProject` and silently skip non-WPF `.csproj` files, so the project picker never surfaces them.
 
 **Algorithm for `findProjectForFile`:**
 
 1. Start at the directory containing the `.xaml` file.
 2. Walk up the directory tree looking for a `.csproj` file in the same folder.
-3. Stop at the workspace root.
-4. If no single project found, fall back to `findProjectsInWorkspace()` and prompt.
+3. Skip any `.csproj` that fails `isWpfProject()`.
+4. Stop at the workspace root.
+5. If no WPF project found, fall back to `findProjectsInWorkspace()` and prompt.
 
 **Algorithm for `getOutputAssemblies`:**
 
@@ -128,18 +158,20 @@ getDesignerExecutable(context: vscode.ExtensionContext): string | null
 **`wpf.previewXaml` flow:**
 
 ```
+0. isWpfXaml() — reject with error if namespace is not WPF (Avalonia / UWP / WinUI / Uno).
 1. Resolve the XAML file URI (from arg or active editor).
 2. Look up cached project selection for this workspace folder.
 3. If no project cached:
-   a. Run findProjectForFile().
-   b. If ambiguous and C# Dev Kit NOT installed → showProjectPicker().
+   a. Run findProjectForFile() — only returns WPF .csproj files.
+   b. If ambiguous and C# Dev Kit NOT installed → showProjectPicker() — only lists WPF projects.
    c. Cache the selection in workspaceState.
-4. Show progress notification: "Building <project>…"
-5. Run buildProject(). On failure → show error, abort.
-6. Collect output assemblies.
-7. Check designer executable exists; if not → offer to run buildDesignerTools.
-8. launchDesigner(xamlPath, assemblies).
-9. Show information message: "Designer launched for <file>."
+4. isWpfProject() — reject with error if the resolved project is not a WPF project.
+5. Check TFM compatibility between project and designer; offer rebuild if needed.
+6. Show progress notification: "Building <project>…"
+7. Run buildProject(). On failure → show error, abort.
+8. Collect output assemblies.
+9. Check designer executable exists; if not → offer to run buildDesignerTools.
+10. launchDesigner(xamlPath, assemblies).
 ```
 
 ---
@@ -261,11 +293,13 @@ Do NOT ignore `tools/**` — the pre-built designer binaries must be included.
 
 | Scenario | Behaviour |
 |---|---|
+| XAML file is not WPF (Avalonia / UWP / WinUI / Uno) | Error notification; abort immediately |
+| Resolved project is not a WPF project | Error notification naming the project; abort |
 | Designer binary not found | Error notification with "Run Build Designer Tools" button |
 | `dotnet build` fails | Error notification with "Show Output" button |
-| No project found for XAML file | Warning notification; open project picker |
+| No WPF project found for XAML file | Warning notification; open project picker (WPF-only) |
 | Designer process crashes | Detected via `child_process` `exit` event; show error notification |
-| Multiple `.csproj` in workspace | Show quick-pick unless C# Dev Kit is installed and auto-detected |
+| Multiple WPF `.csproj` in workspace | Show quick-pick unless C# Dev Kit is installed and auto-detected |
 
 ---
 

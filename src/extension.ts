@@ -6,6 +6,8 @@ import {
   findProjectsInWorkspace,
   getOutputAssemblies,
   isCSharpDevKitInstalled,
+  isWpfProject,
+  isWpfXaml,
   showProjectPicker,
 } from './projectDiscovery';
 import {
@@ -37,10 +39,28 @@ export function activate(context: vscode.ExtensionContext): void {
 
       const xamlPath = resource.fsPath;
 
+      // 0. Verify this is a WPF XAML file, not UWP/WinUI/Uno/Avalonia.
+      if (!isWpfXaml(xamlPath)) {
+        vscode.window.showErrorMessage(
+          'This XAML file does not appear to be a WPF file. ' +
+          'The WPF extension only supports WPF XAML (xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation").'
+        );
+        return;
+      }
+
       // 1. Resolve project
       const projectPath = await resolveProject(xamlPath);
       if (!projectPath) {
         return; // User cancelled picker or no project found.
+      }
+
+      // 1b. Verify the resolved project is a WPF project.
+      if (!isWpfProject(projectPath)) {
+        vscode.window.showErrorMessage(
+          `"${path.basename(projectPath)}" is not a WPF project. ` +
+          'Only projects with <UseWPF>true</UseWPF> (or legacy WPF project references) are supported.'
+        );
+        return;
       }
 
       if (previewOperations.has(projectPath)) {

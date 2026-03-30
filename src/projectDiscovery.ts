@@ -14,8 +14,68 @@ export function isCSharpDevKitInstalled(): boolean {
 }
 
 /**
+ * Returns true if the XAML file appears to be a WPF XAML file.
+ * Checks the root element's namespace declarations for known non-WPF indicators.
+ */
+export function isWpfXaml(xamlPath: string): boolean {
+  try {
+    const fd = fs.openSync(xamlPath, 'r');
+    const buf = Buffer.alloc(4096);
+    const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+    fs.closeSync(fd);
+    const head = buf.toString('utf8', 0, bytesRead);
+
+    // Avalonia uses its own distinct root namespace
+    if (/xmlns\s*=\s*["']https?:\/\/github\.com\/avaloniaui["']/i.test(head) ||
+        /xmlns\s*=\s*["']https?:\/\/avaloniaui\.net\//i.test(head)) {
+      return false;
+    }
+
+    // UWP / WinUI / Uno use "using:" namespace syntax — WPF never does
+    if (/xmlns:\w+\s*=\s*["']using:/i.test(head)) {
+      return false;
+    }
+
+    // WPF's canonical presentation namespace must be the default xmlns
+    return /xmlns\s*=\s*["']http:\/\/schemas\.microsoft\.com\/winfx\/2006\/xaml\/presentation["']/i.test(head);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns true if the .csproj is a WPF project.
+ * SDK-style projects must have <UseWPF>true</UseWPF>.
+ * Legacy projects are recognised by WPF type GUIDs or PresentationFramework references.
+ * Projects referencing Avalonia, Uno, or WinAppSDK are rejected.
+ */
+export function isWpfProject(projectPath: string): boolean {
+  try {
+    const xml = fs.readFileSync(projectPath, 'utf8');
+
+    // Hard rejections — non-WPF frameworks
+    if (/PackageReference[^>]+Include\s*=\s*["']Avalonia["']/i.test(xml)) { return false; }
+    if (/PackageReference[^>]+Include\s*=\s*["']Uno\.(WinUI|UI)["']/i.test(xml)) { return false; }
+    if (/PackageReference[^>]+Include\s*=\s*["']Microsoft\.WindowsAppSDK["']/i.test(xml)) { return false; }
+    if (/<TargetPlatformIdentifier[^>]*>\s*UAP\s*<\/TargetPlatformIdentifier>/i.test(xml)) { return false; }
+
+    const isSdk = /\<Project\s+Sdk\s*=/i.test(xml.slice(0, 512));
+    if (isSdk) {
+      // SDK-style WPF projects explicitly opt in with <UseWPF>true</UseWPF>
+      return /<UseWPF\s*>\s*true\s*<\/UseWPF>/i.test(xml);
+    }
+
+    // Legacy (non-SDK) projects: WPF type GUID or direct PresentationFramework reference
+    return /\{60DC8134-EBA5-43B8-BCC9-BB4BC16C2548\}/i.test(xml) ||
+           /Include\s*=\s*["']PresentationFramework["']/i.test(xml);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Walk up from the directory containing the XAML file to the workspace root
- * looking for a .csproj file. Returns the first one found, or null.
+ * looking for a WPF .csproj file. Returns the first one found, or null.
  */
 export async function findProjectForFile(xamlFilePath: string): Promise<string | null> {
   const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -28,7 +88,10 @@ export async function findProjectForFile(xamlFilePath: string): Promise<string |
       const entries = fs.readdirSync(dir);
       const csproj = entries.find((e: string) => e.endsWith('.csproj'));
       if (csproj) {
-        return path.join(dir, csproj);
+        const projectPath = path.join(dir, csproj);
+        if (isWpfProject(projectPath)) {
+          return projectPath;
+        }
       }
     } catch {
       break;
@@ -45,11 +108,11 @@ export async function findProjectForFile(xamlFilePath: string): Promise<string |
 }
 
 /**
- * Find all .csproj files across workspace folders (up to 50).
+ * Find all WPF .csproj files across workspace folders (up to 50).
  */
 export async function findProjectsInWorkspace(): Promise<string[]> {
   const uris = await vscode.workspace.findFiles('**/*.csproj', '**/node_modules/**', 50);
-  return uris.map(u => u.fsPath);
+  return uris.map(u => u.fsPath).filter(isWpfProject);
 }
 
 /**
