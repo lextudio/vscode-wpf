@@ -6,6 +6,12 @@ This extension integrates the [WpfDesigner](https://github.com/icsharpcode/WpfDe
 
 ---
 
+## Platform Support
+
+**Windows only.** The extension declares `"os": ["win32"]` in `package.json`. VS Code and the Marketplace use this field to block installation on macOS and Linux. WPF and XamlDesigner.exe are Windows-only technologies, so no cross-platform support is planned.
+
+---
+
 ## Goals
 
 1. **Preview button** — When a `.xaml` file is open, show a "Preview in Designer" button in the editor title bar.

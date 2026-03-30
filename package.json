@@ -7,6 +7,7 @@
   "engines": {
     "vscode": "^1.76.0"
   },
+  "os": ["win32"],
   "main": "out/extension.js",
   "icon": "logo.png",
   "repository": {
