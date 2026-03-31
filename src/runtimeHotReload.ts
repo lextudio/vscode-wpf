@@ -26,6 +26,10 @@ function getOutputChannel(): vscode.OutputChannel {
   return outputChannel;
 }
 
+export function showRuntimeHotReloadOutput(): void {
+  getOutputChannel().show(true);
+}
+
 export function registerRuntimeHotReload(context: vscode.ExtensionContext): void {
   extensionPath = context.extensionPath;
 
@@ -156,18 +160,16 @@ export async function pushRuntimeXamlUpdate(
   xamlPath: string,
   xamlText: string
 ): Promise<boolean> {
-  const liveRuntimeOnEdit = vscode.workspace.getConfiguration('wpf').get<boolean>('liveRuntimeOnEdit', true);
-  if (!liveRuntimeOnEdit) {
-    return false;
-  }
-
+  getOutputChannel().appendLine(`[Runtime] Manual hot reload requested for ${xamlPath}`);
   const info = runtimeSessionsByProject.get(projectPath);
   if (!info) {
+    getOutputChannel().appendLine(`[Runtime] No running debug session found for ${projectPath}`);
     return false;
   }
 
   const helperAssemblyPath = await ensureRuntimeHelperBuilt();
   if (!helperAssemblyPath) {
+    getOutputChannel().appendLine('[Runtime] Runtime helper could not be built or located.');
     return false;
   }
 

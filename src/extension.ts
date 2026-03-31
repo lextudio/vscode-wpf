@@ -26,6 +26,7 @@ import {
   hasRunningRuntimeSession,
   pushRuntimeXamlUpdate,
   registerRuntimeHotReload,
+  showRuntimeHotReloadOutput,
   startRuntimeHotReloadSession,
 } from './runtimeHotReload';
 
@@ -296,16 +297,22 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       if (hasRunningRuntimeSession(projectPath)) {
+        showRuntimeHotReloadOutput();
         const xamlDocument = await vscode.workspace.openTextDocument(resource);
         const pushed = await pushRuntimeXamlUpdate(projectPath, xamlPath, xamlDocument.getText());
         if (pushed) {
           vscode.window.showInformationMessage(
             `Applied hot reload update for ${path.basename(xamlPath)}.`
           );
+        } else {
+          vscode.window.showWarningMessage(
+            'WPF hot reload did not apply. See the "WPF Hot Reload" output channel for details.'
+          );
         }
         return;
       }
 
+      showRuntimeHotReloadOutput();
       const started = await startRuntimeHotReloadSession(context, projectPath, xamlPath);
       if (!started) {
         return;
