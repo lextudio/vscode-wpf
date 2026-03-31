@@ -258,6 +258,8 @@ function resolveSharpDbgExecutable(context: vscode.ExtensionContext): string | n
   const candidates = [
     path.join(context.extensionPath, 'tools', 'SharpDbg', 'SharpDbg.Cli.exe'),
     path.join(context.extensionPath, 'tools', 'SharpDbg', 'SharpDbg.Cli.dll'),
+    path.join(context.extensionPath, 'external', 'SharpDbg', 'artifacts', 'bin', 'SharpDbg.Cli', 'debug', 'SharpDbg.Cli.exe'),
+    path.join(context.extensionPath, 'external', 'SharpDbg', 'artifacts', 'bin', 'SharpDbg.Cli', 'debug', 'SharpDbg.Cli.dll'),
     path.join(context.extensionPath, 'external', 'SharpDbg', 'artifacts', 'bin', 'SharpDbg.Cli', 'Debug', 'net10.0', 'SharpDbg.Cli.exe'),
     path.join(context.extensionPath, 'external', 'SharpDbg', 'artifacts', 'bin', 'SharpDbg.Cli', 'Debug', 'net10.0', 'SharpDbg.Cli.dll'),
   ];
