@@ -282,6 +282,12 @@ public static class WpfHotReloadAgent
         }
 
         var items = parsedItemsControl.Items.Cast<object>().ToList();
+        var liveItems = liveItemsControl.Items.Cast<object>().ToList();
+        if (TryApplyItemsInPlace(liveItemsControl, parsedItemsControl, liveItems, items))
+        {
+            return;
+        }
+
         parsedItemsControl.Items.Clear();
         liveItemsControl.Items.Clear();
         foreach (var item in items)
@@ -393,6 +399,66 @@ public static class WpfHotReloadAgent
         }
 
         return NameMatches(liveContent, parsedContent);
+    }
+
+    private static bool TryApplyItemsInPlace(
+        ItemsControl liveItemsControl,
+        ItemsControl parsedItemsControl,
+        IReadOnlyList<object> liveItems,
+        IReadOnlyList<object> parsedItems)
+    {
+        var liveNamedItems = liveItems
+            .Select((item, index) => new { item, index, name = GetElementName(item) })
+            .Where(entry => string.IsNullOrWhiteSpace(entry.name) is false)
+            .GroupBy(entry => entry.name!, StringComparer.Ordinal)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(group => group.Key, group => (group.Single().item, group.Single().index), StringComparer.Ordinal);
+
+        var usedLiveIndexes = new HashSet<int>();
+        var reorderedItems = new List<object>(parsedItems.Count);
+        var nextPositionalLiveIndex = 0;
+
+        foreach (var parsedItem in parsedItems)
+        {
+            var matchingLiveItem = FindMatchingLiveItem(
+                parsedItem,
+                liveItems,
+                liveNamedItems,
+                usedLiveIndexes,
+                ref nextPositionalLiveIndex);
+
+            if (matchingLiveItem is not null)
+            {
+                if (!TryApplyItemObject(matchingLiveItem, parsedItem))
+                {
+                    return false;
+                }
+
+                reorderedItems.Add(matchingLiveItem);
+                continue;
+            }
+
+            reorderedItems.Add(parsedItem);
+        }
+
+        parsedItemsControl.Items.Clear();
+        liveItemsControl.Items.Clear();
+        foreach (var item in reorderedItems)
+        {
+            liveItemsControl.Items.Add(item);
+        }
+
+        return true;
+    }
+
+    private static bool TryApplyItemObject(object liveItem, object parsedItem)
+    {
+        if (liveItem is UIElement liveElement && parsedItem is UIElement parsedElement)
+        {
+            return TryApplyObject(liveElement, parsedElement);
+        }
+
+        return Equals(liveItem, parsedItem);
     }
 
     private static bool TryApplyPanelChildrenInPlace(
@@ -515,6 +581,49 @@ public static class WpfHotReloadAgent
 
             usedLiveIndexes.Add(liveIndex);
             return liveChild;
+        }
+
+        return null;
+    }
+
+    private static object? FindMatchingLiveItem(
+        object parsedItem,
+        IReadOnlyList<object> liveItems,
+        IReadOnlyDictionary<string, (object item, int index)> liveNamedItems,
+        ISet<int> usedLiveIndexes,
+        ref int nextPositionalLiveIndex)
+    {
+        var parsedName = GetElementName(parsedItem);
+        if (!string.IsNullOrWhiteSpace(parsedName) &&
+            liveNamedItems.TryGetValue(parsedName, out var namedMatch) &&
+            !usedLiveIndexes.Contains(namedMatch.index) &&
+            namedMatch.item.GetType() == parsedItem.GetType())
+        {
+            usedLiveIndexes.Add(namedMatch.index);
+            return namedMatch.item;
+        }
+
+        while (nextPositionalLiveIndex < liveItems.Count)
+        {
+            var liveIndex = nextPositionalLiveIndex++;
+            if (usedLiveIndexes.Contains(liveIndex))
+            {
+                continue;
+            }
+
+            var liveItem = liveItems[liveIndex];
+            if (liveItem.GetType() != parsedItem.GetType())
+            {
+                continue;
+            }
+
+            if (!NameMatches(liveItem, parsedItem) && !(liveItem is not UIElement && Equals(liveItem, parsedItem)))
+            {
+                continue;
+            }
+
+            usedLiveIndexes.Add(liveIndex);
+            return liveItem;
         }
 
         return null;
