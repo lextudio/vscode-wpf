@@ -106,6 +106,7 @@ public static class WpfHotReloadAgent
     {
         if (TryApplyObject(liveRoot, parsedRoot))
         {
+            ApplyNamedSelectorStates(liveRoot, parsedRoot);
             return $"ok: {DescribeApplyResult(liveRoot)}";
         }
 
@@ -275,24 +276,42 @@ public static class WpfHotReloadAgent
     {
         ApplyFrameworkElement(liveItemsControl, parsedItemsControl);
         ApplyControl(liveItemsControl, parsedItemsControl);
+        liveItemsControl.DisplayMemberPath = parsedItemsControl.DisplayMemberPath;
+        liveItemsControl.ItemStringFormat = parsedItemsControl.ItemStringFormat;
+        liveItemsControl.ItemTemplate = parsedItemsControl.ItemTemplate;
+        liveItemsControl.ItemTemplateSelector = parsedItemsControl.ItemTemplateSelector;
+        liveItemsControl.ItemContainerStyle = parsedItemsControl.ItemContainerStyle;
+        liveItemsControl.ItemsPanel = parsedItemsControl.ItemsPanel;
+        liveItemsControl.AlternationCount = parsedItemsControl.AlternationCount;
+
+        if (liveItemsControl is HeaderedItemsControl liveHeaderedItemsControl &&
+            parsedItemsControl is HeaderedItemsControl parsedHeaderedItemsControl)
+        {
+            liveHeaderedItemsControl.Header = parsedHeaderedItemsControl.Header;
+        }
+
         if (parsedItemsControl.ItemsSource is not null)
         {
             liveItemsControl.ItemsSource = parsedItemsControl.ItemsSource;
-            return;
+        }
+        else
+        {
+            var items = parsedItemsControl.Items.Cast<object>().ToList();
+            var liveItems = liveItemsControl.Items.Cast<object>().ToList();
+            if (!TryApplyItemsInPlace(liveItemsControl, parsedItemsControl, liveItems, items))
+            {
+                parsedItemsControl.Items.Clear();
+                liveItemsControl.Items.Clear();
+                foreach (var item in items)
+                {
+                    liveItemsControl.Items.Add(item);
+                }
+            }
         }
 
-        var items = parsedItemsControl.Items.Cast<object>().ToList();
-        var liveItems = liveItemsControl.Items.Cast<object>().ToList();
-        if (TryApplyItemsInPlace(liveItemsControl, parsedItemsControl, liveItems, items))
+        if (liveItemsControl is Selector liveSelector && parsedItemsControl is Selector parsedSelector)
         {
-            return;
-        }
-
-        parsedItemsControl.Items.Clear();
-        liveItemsControl.Items.Clear();
-        foreach (var item in items)
-        {
-            liveItemsControl.Items.Add(item);
+            ApplySelectorState(liveSelector, parsedSelector);
         }
     }
 
@@ -442,10 +461,28 @@ public static class WpfHotReloadAgent
         }
 
         parsedItemsControl.Items.Clear();
-        liveItemsControl.Items.Clear();
-        foreach (var item in reorderedItems)
+        for (var index = 0; index < reorderedItems.Count; index++)
         {
-            liveItemsControl.Items.Add(item);
+            var desiredItem = reorderedItems[index];
+            var currentIndex = liveItemsControl.Items.IndexOf(desiredItem);
+            if (currentIndex == index)
+            {
+                continue;
+            }
+
+            if (currentIndex >= 0)
+            {
+                liveItemsControl.Items.RemoveAt(currentIndex);
+                liveItemsControl.Items.Insert(index, desiredItem);
+                continue;
+            }
+
+            liveItemsControl.Items.Insert(index, desiredItem);
+        }
+
+        while (liveItemsControl.Items.Count > reorderedItems.Count)
+        {
+            liveItemsControl.Items.RemoveAt(liveItemsControl.Items.Count - 1);
         }
 
         return true;
@@ -502,10 +539,28 @@ public static class WpfHotReloadAgent
         }
 
         parsedPanel.Children.Clear();
-        livePanel.Children.Clear();
-        foreach (var child in reorderedChildren)
+        for (var index = 0; index < reorderedChildren.Count; index++)
         {
-            livePanel.Children.Add(child);
+            var desiredChild = reorderedChildren[index];
+            var currentIndex = livePanel.Children.IndexOf(desiredChild);
+            if (currentIndex == index)
+            {
+                continue;
+            }
+
+            if (currentIndex >= 0)
+            {
+                livePanel.Children.RemoveAt(currentIndex);
+                livePanel.Children.Insert(index, desiredChild);
+                continue;
+            }
+
+            livePanel.Children.Insert(index, desiredChild);
+        }
+
+        while (livePanel.Children.Count > reorderedChildren.Count)
+        {
+            livePanel.Children.RemoveAt(livePanel.Children.Count - 1);
         }
 
         return true;
@@ -702,6 +757,67 @@ public static class WpfHotReloadAgent
                 }
             }
         }
+    }
+
+    private static void ApplyNamedSelectorStates(object liveRoot, object parsedRoot)
+    {
+        if (liveRoot is Selector liveRootSelector && parsedRoot is Selector parsedRootSelector)
+        {
+            ApplySelectorState(liveRootSelector, parsedRootSelector);
+        }
+
+        if (liveRoot is not DependencyObject liveDependencyObject || parsedRoot is not DependencyObject parsedDependencyObject)
+        {
+            return;
+        }
+
+        foreach (var parsedSelector in EnumerateDescendants(parsedDependencyObject).OfType<Selector>())
+        {
+            var selectorName = GetElementName(parsedSelector);
+            if (string.IsNullOrWhiteSpace(selectorName))
+            {
+                continue;
+            }
+
+            if (FindNamedElement(liveDependencyObject, selectorName) is Selector liveSelector)
+            {
+                ApplySelectorState(liveSelector, parsedSelector);
+            }
+        }
+    }
+
+    private static object? FindNamedElement(DependencyObject root, string name)
+    {
+        if (GetElementName(root) == name)
+        {
+            return root;
+        }
+
+        return EnumerateDescendants(root).FirstOrDefault(candidate =>
+            string.Equals(GetElementName(candidate), name, StringComparison.Ordinal));
+    }
+
+    private static void ApplySelectorState(Selector liveSelector, Selector parsedSelector)
+    {
+        liveSelector.SelectedValuePath = parsedSelector.SelectedValuePath;
+        if (parsedSelector.ItemsSource is not null &&
+            parsedSelector.SelectedValue is not null &&
+            parsedSelector.SelectedValue is not DependencyObject)
+        {
+            liveSelector.SelectedValue = parsedSelector.SelectedValue;
+            return;
+        }
+
+        if (parsedSelector.SelectedIndex >= 0 && parsedSelector.SelectedIndex < liveSelector.Items.Count)
+        {
+            var selectedItem = liveSelector.Items[parsedSelector.SelectedIndex];
+            liveSelector.SelectedItem = selectedItem;
+            liveSelector.SelectedIndex = parsedSelector.SelectedIndex;
+            return;
+        }
+
+        liveSelector.SelectedItem = null;
+        liveSelector.SelectedIndex = -1;
     }
 
     private static string? TryExtractXClass(string xamlText)
