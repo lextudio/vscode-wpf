@@ -15,7 +15,8 @@
   ],
   "activationEvents": [
     "onView:wpf.toolbox",
-    "onLanguage:xaml"
+    "onLanguage:xaml",
+    "onCommand:wpf.openLivePreview"
   ],
   "main": "out/extension.js",
   "icon": "logo.png",
@@ -81,6 +82,18 @@
       {
         "command": "wpf.buildDesignerTools",
         "title": "WPF: Build Designer Tools"
+      },
+      {
+        "command": "wpf.refreshLivePreview",
+        "title": "WPF: Refresh Live Preview"
+      },
+      {
+        "command": "wpf.openLivePreview",
+        "title": "WPF: Live Preview",
+        "icon": {
+          "light": "images/preview.svg",
+          "dark": "images/preview.svg"
+        }
       }
     ],
     "languages": [
@@ -106,6 +119,11 @@
           "command": "wpf.previewXaml",
           "when": "resourceExtname == .xaml",
           "group": "navigation@1"
+        },
+        {
+          "command": "wpf.openLivePreview",
+          "when": "resourceExtname == .xaml",
+          "group": "navigation@2"
         }
       ],
       "commandPalette": [
@@ -123,6 +141,12 @@
         },
         {
           "command": "wpf.buildDesignerTools"
+        },
+        {
+          "command": "wpf.refreshLivePreview"
+        },
+        {
+          "command": "wpf.openLivePreview"
         }
       ]
     },

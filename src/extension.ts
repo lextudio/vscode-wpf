@@ -24,6 +24,7 @@ import {
 import { disposeStatusBar, getStatusBarItem, updateStatusBar } from './statusBar';
 import { getPreviewProjectContext, startLanguageServer, stopLanguageServer } from './languageServer';
 import {
+  captureRuntimePreview,
   getRuntimeSessionInfo,
   hasRunningRuntimeSession,
   pushRuntimeXamlUpdate,
@@ -32,6 +33,7 @@ import {
   startRuntimeHotReloadSession,
 } from './runtimeHotReload';
 import { registerToolbox } from './toolbox';
+import { WpfLivePreviewPanel } from './livePreview';
 
 // Per-workspace-folder project selection, keyed by workspace folder path.
 const selectedProjects = new Map<string, string>();
@@ -45,6 +47,61 @@ export function activate(context: vscode.ExtensionContext): void {
   startLanguageServer(context);
   registerRuntimeHotReload(context);
   registerToolbox(context);
+
+  const livePreviewPanel = new WpfLivePreviewPanel(async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== 'xaml' || editor.document.uri.scheme !== 'file') {
+      return {
+        ok: false as const,
+        message: 'Open a WPF XAML file in the editor to capture preview.',
+      };
+    }
+
+    const resource = editor.document.uri;
+    const xamlPath = resource.fsPath;
+    if (!isWpfXaml(xamlPath)) {
+      return {
+        ok: false as const,
+        message: 'The active file is not recognized as WPF XAML.',
+      };
+    }
+
+    const previewContext = await getPreviewProjectContext(resource);
+    const projectPath = previewContext?.projectPath ?? await resolveProject(xamlPath);
+    if (!projectPath) {
+      return {
+        ok: false as const,
+        message: 'No project selected for the active XAML file.',
+      };
+    }
+
+    if (!hasRunningRuntimeSession(projectPath)) {
+      return {
+        ok: false as const,
+        message: 'No running runtime session. Run "WPF: Hot Reload" first to start the app.',
+      };
+    }
+
+    const frame = await captureRuntimePreview(projectPath, xamlPath);
+    if (!frame) {
+      return {
+        ok: false as const,
+        message: 'Runtime preview is not ready yet. Wait for the app to finish loading and refresh.',
+      };
+    }
+
+    return {
+      ok: true as const,
+      snapshot: {
+        imageDataUrl: `data:image/png;base64,${frame.pngBase64}`,
+        width: frame.width,
+        height: frame.height,
+        source: frame.source,
+        projectPath,
+        xamlPath,
+      },
+    };
+  });
 
   // -------------------------------------------------------------------------
   // Command: wpf.previewXaml
@@ -308,6 +365,9 @@ export function activate(context: vscode.ExtensionContext): void {
           vscode.window.showInformationMessage(
             `Applied hot reload update for ${path.basename(xamlPath)}.`
           );
+          if (livePreviewPanel.isOpen()) {
+            void livePreviewPanel.refresh('hotReload');
+          }
         } else {
           vscode.window.showWarningMessage(
             'WPF hot reload did not apply. See the "WPF Hot Reload" output channel for details.'
@@ -325,6 +385,9 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showInformationMessage(
         `Started WPF hot reload session for ${path.basename(projectPath)}. Once the app finishes loading, click Hot Reload again to push the current XAML file.`
       );
+      if (livePreviewPanel.isOpen()) {
+        void livePreviewPanel.refresh('sessionStart');
+      }
     })
   );
 
@@ -350,6 +413,21 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('wpf.buildDesignerTools', () =>
       buildDesignerTools(context)
     )
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf.refreshLivePreview', async () => {
+      if (!livePreviewPanel.isOpen()) {
+        livePreviewPanel.open();
+      }
+      await livePreviewPanel.refresh('manual');
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf.openLivePreview', async () => {
+      livePreviewPanel.open();
+    })
   );
 
   context.subscriptions.push(
@@ -397,6 +475,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('wpf._test.parseProject', (projectPath?: string) => {
       if (!projectPath) { return null; }
       return parseProject(projectPath);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf._test.pushRuntimeXamlUpdate', async (projectPath?: string, xamlPath?: string, xamlText?: string) => {
+      if (!projectPath || !xamlPath || !xamlText) { return false; }
+      return pushRuntimeXamlUpdate(projectPath, xamlPath, xamlText);
     })
   );
 

@@ -24,6 +24,8 @@ Runtime hot reload is now **runtime-first, push-based, and debugger-free**. The 
 - Named pipe is the **only** runtime communication channel (no DAP/debugger fallback needed).
 - Runtime hot reload is **manual push**, not auto-apply-on-edit.
 - **In-app overlay toolbar** injected by the runtime helper shows Hot Reload status inside the WPF app.
+- Added a VS Code **WPF Live Preview** pane backed by the same out-of-process named-pipe protocol used for hot reload.
+- Added protocol message kind `preview` (MVP action: `capture`) returning PNG snapshots from the running WPF app.
 
 ### Important reliability fixes completed
 
@@ -924,6 +926,7 @@ Protocol:
 Commands:
 
 - `applyXamlText` — push XAML text to be applied to the live UI
+- `preview.capture` — return a PNG snapshot from the running app (used by VS Code `WPF Live Preview` pane)
 - `applyScopedPatch` — apply a targeted property/subtree update (future)
 - `reloadResourceDictionary` — reload resource scope without full window replace (future)
 - `enumerateRoots` — list live window/page instances (future)
@@ -931,6 +934,19 @@ Commands:
 - `getLiveVisualTree` — inspect the running visual tree (future)
 - `query` — probe readiness (`agent.ready`) and element state
 - `ping` — liveness check
+
+Current request/response shapes:
+
+```json
+{ "kind": "preview", "action": "capture", "filePath": "C:\\repo\\sample\\MainWindow.xaml" }
+```
+
+```json
+{
+  "result": "ok",
+  "value": "{\"pngBase64\":\"...\",\"width\":1280,\"height\":720,\"source\":\"runtime:MainWindow.xaml\"}"
+}
+```
 
 #### Optional designer channel
 

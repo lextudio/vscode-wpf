@@ -6,7 +6,7 @@ async function runCommand(command, args) {
   await new Promise((resolve, reject) => {
     const proc = cp.spawn(command, args, {
       cwd: path.resolve(__dirname, '..'),
-      shell: true,
+      shell: false,
       stdio: 'inherit',
     });
 
@@ -30,6 +30,29 @@ async function killProcessByImage(imageName) {
   }
 }
 
+async function findMsBuildExe() {
+  const vswhere = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe';
+  const fs = require('fs');
+  if (!fs.existsSync(vswhere)) {
+    return null;
+  }
+
+  return new Promise(resolve => {
+    const proc = cp.spawn(
+      vswhere,
+      ['-latest', '-requires', 'Microsoft.Component.MSBuild', '-find', 'MSBuild\\**\\Bin\\MSBuild.exe'],
+      { shell: false }
+    );
+    let output = '';
+    proc.stdout?.on('data', d => { output += d.toString(); });
+    proc.on('close', () => {
+      const msbuild = output.trim().split('\n')[0]?.trim();
+      resolve(msbuild && fs.existsSync(msbuild) ? msbuild : null);
+    });
+    proc.on('error', () => resolve(null));
+  });
+}
+
 async function main() {
   const repoRoot = path.resolve(__dirname, '..');
   const extensionDevelopmentPath = repoRoot;
@@ -44,7 +67,15 @@ async function main() {
 
   await runCommand('dotnet', ['build', sharpDbgProject, '--configuration', 'Debug', '-nologo']);
   await runCommand('dotnet', ['build', sampleProject, '--configuration', 'Debug', '-nologo']);
-  await runCommand('msbuild', [frameworkSampleProject, '/p:Configuration=Debug', '/nologo', '/v:m']);
+
+  const msbuild = await findMsBuildExe();
+  if (!msbuild) {
+    console.warn('WARNING: MSBuild.exe not found via vswhere — skipping net462 sample build and tests.');
+    process.env.WPF_SKIP_NETFX_TESTS = '1';
+  } else {
+    await runCommand(msbuild, [frameworkSampleProject, '/p:Configuration=Debug', '/nologo', '/v:m']);
+    process.env.WPF_SKIP_NETFX_TESTS = '0';
+  }
 
   try {
     await runTests({

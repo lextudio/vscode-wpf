@@ -189,9 +189,15 @@ export async function buildProject(
   channel.appendLine(`  Configuration : ${configuration}`);
 
   const isSdkStyle = isSdkStyleProject(projectPath);
-  const [cmd, args] = isSdkStyle
-    ? [dotnet, ['build', projectPath, '--configuration', configuration, '--nologo', '-v', 'm']]
-    : ['msbuild', [projectPath, `/p:Configuration=${configuration}`, '/nologo', '/v:m']];
+  let cmd: string;
+  let args: string[];
+  if (isSdkStyle) {
+    cmd = dotnet;
+    args = ['build', projectPath, '--configuration', configuration, '--nologo', '-v', 'm'];
+  } else {
+    cmd = await findMsBuildExe() ?? 'msbuild';
+    args = [projectPath, `/p:Configuration=${configuration}`, '/nologo', '/v:m'];
+  }
 
   channel.appendLine(`  Command       : ${cmd} ${args.join(' ')}\n`);
 
@@ -554,4 +560,33 @@ function isSdkStyleProject(projectPath: string): boolean {
   } catch {
     return true;
   }
+}
+
+/**
+ * Use vswhere.exe to locate MSBuild.exe from the latest Visual Studio
+ * installation. Required for legacy .NET Framework WPF projects that need
+ * the full VS MSBuild toolchain (PresentationBuildTasks / WinFX targets).
+ * Returns null if vswhere is not found or no VS installation is detected.
+ */
+async function findMsBuildExe(): Promise<string | null> {
+  const vswhere = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe';
+  if (!fs.existsSync(vswhere)) {
+    return null;
+  }
+
+  return new Promise(resolve => {
+    const proc = cp.spawn(
+      vswhere,
+      ['-latest', '-requires', 'Microsoft.Component.MSBuild', '-find', 'MSBuild\\**\\Bin\\MSBuild.exe'],
+      { shell: false }
+    );
+
+    let output = '';
+    proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
+    proc.on('close', () => {
+      const msbuild = output.trim().split('\n')[0]?.trim();
+      resolve(msbuild && fs.existsSync(msbuild) ? msbuild : null);
+    });
+    proc.on('error', () => resolve(null));
+  });
 }

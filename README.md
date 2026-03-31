@@ -10,14 +10,19 @@ development experience for WPF with open source components
 
 - WPF designer originated from SharpDevelop 4
 - XAML Source Generator (XSG) based language server
-- SharpDbg based XAML Hot Reload
+- Runtime startup-hook based XAML Hot Reload
+- VS Code toolbox drag/drop for XAML controls
+- Out-of-process live preview pane (`WPF Live Preview`) fed by runtime protocol snapshots
 
 > Note that to inspect runtime state of your WPF apps, tools like [Snoop](https://github.com/snoopwpf/snoopwpf) can be used. We might explore how to integrate them in this extension in the future.
 
 ## Getting started
 
 - Activates on `*.xaml` files.
-- Click the Hot Reload or Designer actions on top right corner of your XAML file tab to launch.
+- Click the `Hot Reload`, `Live Preview`, or `Designer` actions on the top-right of your XAML editor tab.
+- Use the Explorer side bar views:
+  - `WPF Toolbox` to drag controls into XAML editors.
+- `WPF Live Preview` opens as an editor-side panel when the `Live Preview` action is clicked.
 
 ## Status
 

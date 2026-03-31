@@ -5,7 +5,9 @@ using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
+#if !NETFRAMEWORK
 using System.Text.Json;
+#endif
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows;
@@ -15,6 +17,7 @@ using System.Windows.Documents;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using System.Xaml;
 using System.Xml.Linq;
@@ -30,12 +33,14 @@ public static class WpfHotReloadAgent
 
     public static string PipeName { get; } =
         Environment.GetEnvironmentVariable("WPF_HOTRELOAD_PIPE")
-        ?? $"wpf-hotreload-{Environment.ProcessId}";
+        ?? $"wpf-hotreload-{Process.GetCurrentProcess().Id}";
 
+#if !NETFRAMEWORK
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
+#endif
 
     private static void Log(string message)
     {
@@ -89,7 +94,7 @@ public static class WpfHotReloadAgent
 
                 Log("Reading line...");
                 var line = reader.ReadLine();
-                Log($"Read line: {(line is null ? "(null)" : line[..Math.Min(line.Length, 100)])}");
+                Log($"Read line: {(line is null ? "(null)" : line.Substring(0, Math.Min(line.Length, 100)))}");
                 if (line is null)
                 {
                     continue;
@@ -99,7 +104,7 @@ public static class WpfHotReloadAgent
                 string? responseValue = null;
                 try
                 {
-                    var request = JsonSerializer.Deserialize<PipeRequest>(line, JsonOptions);
+                    var request = DeserializePipeRequest(line);
                     if (request is null)
                     {
                         result = "error: invalid request";
@@ -108,6 +113,27 @@ public static class WpfHotReloadAgent
                     {
                         result = "ok";
                         responseValue = QueryValue(request.Query);
+                    }
+                    else if (string.Equals(request.Kind, "preview", StringComparison.Ordinal))
+                    {
+                        var app = Application.Current;
+                        if (app is null)
+                        {
+                            result = "error: no current WPF application";
+                        }
+                        else
+                        {
+                            var captureResult = app.Dispatcher.Invoke(() => CapturePreviewFrame(request.FilePath));
+                            if (captureResult.Result.StartsWith("ok", StringComparison.Ordinal))
+                            {
+                                result = "ok";
+                                responseValue = captureResult.Value;
+                            }
+                            else
+                            {
+                                result = captureResult.Result;
+                            }
+                        }
                     }
                     else if (request.FilePath is null || request.XamlText is null)
                     {
@@ -144,7 +170,7 @@ public static class WpfHotReloadAgent
                 }
 
                 Log("Writing response...");
-                writer.WriteLine(JsonSerializer.Serialize(new PipeResponse { Result = result, Value = responseValue }, JsonOptions));
+                writer.WriteLine(SerializePipeResponse(result, responseValue));
                 Log("Response written");
             }
             catch (OperationCanceledException)
@@ -164,6 +190,7 @@ public static class WpfHotReloadAgent
     private sealed class PipeRequest
     {
         public string? Kind { get; set; }
+        public string? Action { get; set; }
         public string? FilePath { get; set; }
         public string? XamlText { get; set; }
         public string? Query { get; set; }
@@ -172,6 +199,20 @@ public static class WpfHotReloadAgent
     private sealed class PipeResponse
     {
         public string? Result { get; set; }
+        public string? Value { get; set; }
+    }
+
+    private sealed class PreviewFrame
+    {
+        public string PngBase64 { get; set; } = string.Empty;
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public string Source { get; set; } = "runtime-main-window";
+    }
+
+    private sealed class PreviewCaptureResult
+    {
+        public string Result { get; set; } = "error: unknown";
         public string? Value { get; set; }
     }
 
@@ -528,6 +569,131 @@ public static class WpfHotReloadAgent
             "PaneList.SelectedIndex" => DescribeSelectorIndex(FindNamedElement(Application.Current?.MainWindow, "PaneList") as Selector),
             _ => null,
         };
+    }
+
+    private static PipeRequest? DeserializePipeRequest(string line)
+    {
+#if NETFRAMEWORK
+        return ParsePipeRequest(line);
+#else
+        return JsonSerializer.Deserialize<PipeRequest>(line, JsonOptions);
+#endif
+    }
+
+    private static string SerializePipeResponse(string result, string? value)
+    {
+#if NETFRAMEWORK
+        return ToJsonString("result", result, "value", value);
+#else
+        return JsonSerializer.Serialize(new PipeResponse { Result = result, Value = value }, JsonOptions);
+#endif
+    }
+
+    private static string SerializePreviewFrame(PreviewFrame frame)
+    {
+#if NETFRAMEWORK
+        return ToJsonString("pngBase64", frame.PngBase64, "width", frame.Width.ToString(), "height", frame.Height.ToString(), "source", frame.Source);
+#else
+        return JsonSerializer.Serialize(frame, JsonOptions);
+#endif
+    }
+
+#if NETFRAMEWORK
+    private static PipeRequest? ParsePipeRequest(string json)
+    {
+        try
+        {
+            var request = new PipeRequest();
+            var parts = json.Split(new[] { '"' }, System.StringSplitOptions.None);
+            for (int i = 0; i < parts.Length - 1; i++)
+            {
+                if (parts[i].EndsWith(":")) continue;
+                var key = parts[i].TrimEnd(':').Trim(',');
+                var value = parts[i + 1];
+                switch (key)
+                {
+                    case "kind": request.Kind = value; break;
+                    case "action": request.Action = value; break;
+                    case "filePath": request.FilePath = value; break;
+                    case "xamlText": request.XamlText = value; break;
+                    case "query": request.Query = value; break;
+                }
+            }
+            return request;
+        }
+        catch { return null; }
+    }
+
+    private static string ToJsonString(params string[] pairs)
+    {
+        var sb = new StringBuilder("{");
+        for (int i = 0; i < pairs.Length; i += 2)
+        {
+            if (i > 0) sb.Append(",");
+            sb.Append("\"").Append(pairs[i]).Append("\":");
+            var val = pairs[i + 1];
+            if (val == null) sb.Append("null");
+            else sb.Append("\"").Append(val.Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\"");
+        }
+        sb.Append("}");
+        return sb.ToString();
+    }
+#endif
+
+    private static PreviewCaptureResult CapturePreviewFrame(string? filePath)
+    {
+        try
+        {
+            var app = Application.Current;
+            var window = app?.MainWindow;
+            if (window is null)
+            {
+                return new PreviewCaptureResult { Result = "error: no active MainWindow" };
+            }
+
+            window.UpdateLayout();
+
+            // Capture the content root so the frame reflects actual app visuals.
+            var visual = window.Content as Visual ?? window;
+            var width = (int)Math.Ceiling(Math.Max(1, window.ActualWidth));
+            var height = (int)Math.Ceiling(Math.Max(1, window.ActualHeight));
+
+            if (visual == window.Content && window.Content is FrameworkElement rootElement)
+            {
+                rootElement.UpdateLayout();
+                width = (int)Math.Ceiling(Math.Max(1, rootElement.ActualWidth));
+                height = (int)Math.Ceiling(Math.Max(1, rootElement.ActualHeight));
+            }
+
+            var rtb = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+            rtb.Render(visual);
+
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(rtb));
+            using var ms = new MemoryStream();
+            encoder.Save(ms);
+
+            var frame = new PreviewFrame
+            {
+                PngBase64 = Convert.ToBase64String(ms.ToArray()),
+                Width = width,
+                Height = height,
+                Source = string.IsNullOrWhiteSpace(filePath) ? "runtime-main-window" : $"runtime:{Path.GetFileName(filePath)}",
+            };
+
+            return new PreviewCaptureResult
+            {
+                Result = "ok",
+                Value = SerializePreviewFrame(frame),
+            };
+        }
+        catch (Exception ex)
+        {
+            return new PreviewCaptureResult
+            {
+                Result = $"error: preview capture failed ({ex.GetType().Name}): {ex.Message}",
+            };
+        }
     }
 
     private static string? DescribeBrushColor(Control? control)

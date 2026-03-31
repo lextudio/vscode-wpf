@@ -16,6 +16,13 @@ interface RuntimeSessionInfo {
   pipeReady: boolean;
 }
 
+export interface RuntimePreviewFrame {
+  readonly pngBase64: string;
+  readonly width: number;
+  readonly height: number;
+  readonly source: string;
+}
+
 let outputChannel: vscode.OutputChannel | undefined;
 let extensionPath: string | undefined;
 
@@ -70,18 +77,9 @@ export async function startRuntimeHotReloadSession(
     return true;
   }
 
-  // DOTNET_STARTUP_HOOKS is a .NET Core/5+ feature — it does not exist in .NET Framework.
   const { targetFramework } = parseProject(projectPath);
-  if (/^net\d{2,}$/i.test(targetFramework) || /^net4/i.test(targetFramework)) {
-    getOutputChannel().appendLine(
-      `[Runtime] Project targets .NET Framework (${targetFramework}). Runtime hot reload is not supported.`
-    );
-    vscode.window.showWarningMessage(
-      `Runtime hot reload is not supported for .NET Framework projects (${targetFramework}). ` +
-      'Use the XAML Designer preview instead.'
-    );
-    return false;
-  }
+  const helperTargetTfm = resolveRuntimeHelperTargetFramework(targetFramework);
+  const isFramework = helperTargetTfm === 'net462';
 
   const cfg = vscode.workspace.getConfiguration('wpf');
   const dotnetPath = cfg.get<string>('dotnetPath', 'dotnet');
@@ -104,9 +102,8 @@ export async function startRuntimeHotReloadSession(
   }
 
   // Build the hot reload helper before launching so we can inject it
-  // via DOTNET_STARTUP_HOOKS. This makes the pipe listener available
-  // immediately when the WPF app starts.
-  const helperAssemblyPath = await ensureRuntimeHelperBuilt();
+  // via DOTNET_STARTUP_HOOKS (Core) or AppDomainManager (Framework).
+  const helperAssemblyPath = await ensureRuntimeHelperBuilt(projectPath, helperTargetTfm);
 
   const launchTarget = getLaunchTarget(projectPath, dotnetPath);
   if (!launchTarget) {
@@ -119,9 +116,22 @@ export async function startRuntimeHotReloadSession(
   const pipeName = `wpf-hotreload-${crypto.randomUUID()}`;
   const env: Record<string, string | undefined> = { ...process.env };
   env['WPF_HOTRELOAD_PIPE'] = pipeName;
+
   if (helperAssemblyPath) {
-    env['DOTNET_STARTUP_HOOKS'] = helperAssemblyPath;
-    getOutputChannel().appendLine(`[Runtime] Injecting helper via DOTNET_STARTUP_HOOKS: ${helperAssemblyPath}`);
+    if (isFramework) {
+      // .NET Framework uses AppDomainManager for startup hooks.
+      const helperDir = path.dirname(helperAssemblyPath);
+      const helperDll = path.basename(helperAssemblyPath);
+      const asmName = helperDll.replace(/\.dll$/i, '');
+      env['APPDOMAIN_MANAGER_ASM'] = asmName;
+      env['APPDOMAIN_MANAGER_TYPE'] = 'WpfHotReload.Runtime.FrameworkStartupHook';
+      env['DEVPATH'] = helperDir; // Ensure CLR can find the helper assembly
+      getOutputChannel().appendLine(`[Runtime] Injecting helper via AppDomainManager for Framework: ${helperAssemblyPath}`);
+    } else {
+      // .NET Core/5+ uses DOTNET_STARTUP_HOOKS.
+      env['DOTNET_STARTUP_HOOKS'] = helperAssemblyPath;
+      getOutputChannel().appendLine(`[Runtime] Injecting helper via DOTNET_STARTUP_HOOKS: ${helperAssemblyPath}`);
+    }
   } else {
     getOutputChannel().appendLine('[Runtime] Runtime helper build failed; hot reload will not be available.');
     return false;
@@ -235,6 +245,61 @@ export async function pushRuntimeXamlUpdate(
   return false;
 }
 
+export async function captureRuntimePreview(
+  projectPath: string,
+  xamlPath?: string
+): Promise<RuntimePreviewFrame | null> {
+  const info = runtimeSessionsByProject.get(projectPath);
+  if (!info) {
+    getOutputChannel().appendLine(`[Runtime] Cannot capture preview: no running session for ${projectPath}`);
+    return null;
+  }
+
+  if (xamlPath) {
+    info.xamlPath = xamlPath;
+  }
+
+  if (!info.pipeReady) {
+    const startupReady = await probeRuntimePipeReady(info.pipeName);
+    if (!startupReady) {
+      getOutputChannel().appendLine(`[Runtime] Cannot capture preview: runtime pipe not ready (${info.pipeName}).`);
+      return null;
+    }
+    info.pipeReady = true;
+  }
+
+  const payload: Record<string, unknown> = {
+    kind: 'preview',
+    action: 'capture',
+  };
+
+  if (info.xamlPath) {
+    payload.filePath = info.xamlPath;
+  }
+
+  const response = await sendPipeRequest(info.pipeName, payload);
+  if (!response || response.result !== 'ok' || !response.value) {
+    getOutputChannel().appendLine('[Runtime] Preview capture failed: runtime returned no frame.');
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(response.value) as Partial<RuntimePreviewFrame>;
+    if (!parsed.pngBase64 || typeof parsed.width !== 'number' || typeof parsed.height !== 'number') {
+      return null;
+    }
+
+    return {
+      pngBase64: parsed.pngBase64,
+      width: parsed.width,
+      height: parsed.height,
+      source: typeof parsed.source === 'string' ? parsed.source : 'runtime-main-window',
+    };
+  } catch {
+    return null;
+  }
+}
+
 function sendViaPipe(
   pipeName: string,
   filePath: string,
@@ -325,28 +390,37 @@ function sendPipeRequest(
   });
 }
 
-async function ensureRuntimeHelperBuilt(): Promise<string | null> {
+async function ensureRuntimeHelperBuilt(sampleProjectPath: string, targetTfm: string): Promise<string | null> {
   if (!extensionPath) {
     return null;
   }
 
-  const outputDir = path.join(extensionPath, 'tools', 'WpfHotReload.Runtime');
+  const outputDir = path.join(extensionPath, 'tools', 'WpfHotReload.Runtime', targetTfm);
   const helperDll = path.join(outputDir, 'WpfHotReload.Runtime.dll');
-  const projectPath = path.join(extensionPath, 'src', 'WpfHotReload.Runtime', 'WpfHotReload.Runtime.csproj');
-  if (!fs.existsSync(projectPath)) {
+  const projPath = path.join(extensionPath, 'src', 'WpfHotReload.Runtime', 'WpfHotReload.Runtime.csproj');
+  if (!fs.existsSync(projPath)) {
     vscode.window.showErrorMessage('WPF hot reload runtime helper project was not found.');
     return null;
   }
 
-  if (isRuntimeHelperUpToDate(projectPath, helperDll)) {
+  if (isRuntimeHelperUpToDate(projPath, helperDll)) {
     return helperDll;
   }
 
   const dotnetPath = vscode.workspace.getConfiguration('wpf').get<string>('dotnetPath', 'dotnet');
-  getOutputChannel().appendLine(`[Runtime] Building WPF hot reload helper from ${projectPath}`);
+  getOutputChannel().appendLine(`[Runtime] Building WPF hot reload helper (${targetTfm}) from ${projPath}`);
 
   const buildSucceeded = await new Promise<boolean>(resolve => {
-    const args = ['build', projectPath, '-c', 'Debug', '-nologo', '-p:OutDir=' + `${outputDir}${path.sep}`];
+    const args = [
+      'build',
+      projPath,
+      '-c',
+      'Debug',
+      '-f',
+      targetTfm,
+      '-nologo',
+      '-p:OutDir=' + `${outputDir}${path.sep}`,
+    ];
     const proc = cp.spawn(dotnetPath, args, { shell: true, cwd: extensionPath });
 
     proc.stdout?.on('data', chunk => getOutputChannel().append(chunk.toString()));
@@ -361,6 +435,24 @@ async function ensureRuntimeHelperBuilt(): Promise<string | null> {
   }
 
   return helperDll;
+}
+
+function resolveRuntimeHelperTargetFramework(projectTfm: string): string {
+  const tfm = projectTfm.trim().toLowerCase();
+
+  // Legacy .NET Framework (e.g. net462/net48) uses AppDomainManager injection.
+  if (/^net\d{3,}$/.test(tfm) || /^net4/.test(tfm)) {
+    return 'net462';
+  }
+
+  // For .NET Core/.NET 5+ WPF apps, use the lowest supported runtime helper
+  // so one helper binary can serve from netcoreapp3.0 upward.
+  if (tfm.startsWith('netcoreapp') || /^net\d+(\.\d+)?/.test(tfm)) {
+    return 'netcoreapp3.0';
+  }
+
+  // Fallback to modern runtime path.
+  return 'netcoreapp3.0';
 }
 
 function isRuntimeHelperUpToDate(projectPath: string, helperDllPath: string): boolean {
