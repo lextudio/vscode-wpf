@@ -1,7 +1,11 @@
 using System.Collections;
+using System.Diagnostics;
 using System.IO;
+using System.IO.Pipes;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -13,6 +17,131 @@ namespace WpfHotReload.Runtime;
 
 public static class WpfHotReloadAgent
 {
+    private static volatile bool _pipeListenerRunning;
+    private static CancellationTokenSource? _pipeCts;
+
+    public static string PipeName { get; } =
+        Environment.GetEnvironmentVariable("WPF_HOTRELOAD_PIPE")
+        ?? $"wpf-hotreload-{Environment.ProcessId}";
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
+    private static void Log(string message)
+    {
+        Debug.WriteLine($"[WpfHotReload] {message}");
+    }
+
+    /// <summary>
+    /// Called by StartupHook once Application.Current is available.
+    /// Safe to call multiple times — only the first call starts the listener.
+    /// </summary>
+    public static void EnsurePipeListenerStarted()
+    {
+        Log($"EnsurePipeListenerStarted called, already running={_pipeListenerRunning}");
+        if (_pipeListenerRunning)
+        {
+            return;
+        }
+
+        _pipeCts?.Cancel();
+        _pipeCts = new CancellationTokenSource();
+        var ct = _pipeCts.Token;
+        var name = PipeName;
+
+        var thread = new Thread(() => PipeListenerLoop(name, ct))
+        {
+            IsBackground = true,
+            Name = "WpfHotReloadPipeListener",
+        };
+        thread.Start();
+        _pipeListenerRunning = true;
+    }
+
+    private static void PipeListenerLoop(string pipeName, CancellationToken ct)
+    {
+        Log($"PipeListenerLoop started, pipe={pipeName}");
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                using var server = new NamedPipeServerStream(
+                    pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte);
+                Log("Waiting for connection...");
+                server.WaitForConnection();
+                Log("Client connected");
+
+                using var reader = new StreamReader(server, new UTF8Encoding(false));
+                using var writer = new StreamWriter(server, new UTF8Encoding(false)) { AutoFlush = true };
+
+                Log("Reading line...");
+                var line = reader.ReadLine();
+                Log($"Read line: {(line is null ? "(null)" : line[..Math.Min(line.Length, 100)])}");
+                if (line is null)
+                {
+                    continue;
+                }
+
+                string result;
+                try
+                {
+                    var request = JsonSerializer.Deserialize<PipeRequest>(line, JsonOptions);
+                    if (request?.FilePath is null || request.XamlText is null)
+                    {
+                        result = "error: invalid request";
+                    }
+                    else
+                    {
+                        var app = Application.Current;
+                        if (app is null)
+                        {
+                            result = "error: no current WPF application";
+                        }
+                        else
+                        {
+                            Log("Dispatching to UI thread...");
+                            result = app.Dispatcher.Invoke(() => ApplyXamlTextCore(request.FilePath, request.XamlText));
+                            Log($"Dispatch result: {result}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    result = $"error: {ex.GetType().Name}: {ex.Message}";
+                    Log($"Exception: {result}");
+                }
+
+                Log("Writing response...");
+                writer.WriteLine(JsonSerializer.Serialize(new PipeResponse { Result = result }, JsonOptions));
+                Log("Response written");
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                Log($"PipeListenerLoop error: {ex.GetType().Name}: {ex.Message}");
+                // Connection broken, continue accepting
+            }
+        }
+
+        _pipeListenerRunning = false;
+    }
+
+    private sealed class PipeRequest
+    {
+        public string? FilePath { get; set; }
+        public string? XamlText { get; set; }
+    }
+
+    private sealed class PipeResponse
+    {
+        public string? Result { get; set; }
+    }
+
     public static string ApplyXamlTextFromBase64(string filePath, string base64Text)
     {
         try

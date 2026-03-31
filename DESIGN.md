@@ -895,3 +895,208 @@ The best design is a **runtime-first model**:
 - **WpfDesigner** only as an optional fallback or source of reusable inspection/editing pieces
 
 That should get us much closer to "works like Visual Studio" because the hot reload target is the app the user is actually running.
+
+---
+
+## Current Runtime Hot Reload Blocker
+
+### Current user-visible behavior
+
+The current runtime-first prototype can:
+
+- launch the real WPF app under SharpDbg
+- keep a runtime hot reload session associated with the project
+- accept an explicit "push" gesture from the Hot Reload command
+- route a XAML document plus helper assembly path into SharpDbg
+
+However, runtime apply is still failing in normal interactive use.
+
+Observed output:
+
+```text
+[Runtime] Manual hot reload requested for ...\MainWindow.xaml
+[Runtime] Hot reload rejected for ...\MainWindow.xaml: error: no stack frame available for evaluation
+```
+
+### What this error means
+
+The failure is not in command routing anymore. The extension is reaching SharpDbg and SharpDbg is attempting to run the WPF hot reload helper inside the debuggee.
+
+The rejection happens because SharpDbg currently requires a usable managed IL stack frame in order to evaluate:
+
+- helper assembly load
+- helper method invocation
+
+If the app is running and we force a pause at the wrong moment, the debugger may stop:
+
+- in native or unmanaged code
+- in a state where the active frame is not a managed IL frame
+- before SharpDbg has a usable evaluation frame reference
+
+When that happens, `ApplyWpfHotReload(...)` returns:
+
+`error: no stack frame available for evaluation`
+
+### Why this is still a design problem
+
+This exposes a deeper issue in the current design:
+
+- hot reload is implemented as debugger-time expression evaluation
+- expression evaluation needs a stable managed frame
+- a generic "pause now and evaluate" flow is not reliable enough for arbitrary runtime moments
+
+In other words, the current approach is still too dependent on where the debugger happened to stop, instead of owning a deterministic runtime control point.
+
+### What has already been tried
+
+We already changed the UX to a push model:
+
+- runtime edits are no longer auto-applied on every text change
+- the Hot Reload button starts the session on first click
+- clicking it again pushes the current XAML snapshot
+
+We also hardened SharpDbg in several ways:
+
+- custom WPF hot reload requests are supported over `vsCustomMessage`
+- helper assembly loading/invocation works in the adapter path
+- fallback frame discovery now tries more than the cached top frame
+- additional runtime logging was added so failures show in the `WPF Hot Reload` output channel
+
+Even with those improvements, the manual runtime push still fails in real use because the system still does not always have a valid managed evaluation frame when the user asks for apply.
+
+### Likely root causes
+
+The most likely causes are:
+
+1. The forced pause often lands in unmanaged/native runtime code rather than a managed WPF frame.
+2. The best evaluation target is not necessarily the currently active frame.
+3. Expression evaluation is the wrong primitive for reliable runtime mutation at arbitrary moments.
+4. We may need a stable runtime-side control point rather than opportunistic debugger evaluation.
+
+### Design implications
+
+This suggests the next design iteration should seriously consider one of these directions:
+
+1. Establish a deterministic managed rendezvous point in the debuggee.
+   Example: a helper-owned dispatcher callback or polling bridge that is always reachable from managed code.
+
+2. Move away from "find any stack frame and evaluate now" as the primary apply mechanism.
+   Example: enqueue apply work into the app and let the app execute it on the UI thread when safe.
+
+3. Preserve debugger evaluation only as a bootstrap path.
+   Example: load/register the helper once, then communicate with it through a more stable runtime channel.
+
+4. Make runtime hot reload depend on an explicit stopped state only.
+   This would be simpler, but it is a worse UX and does not really match Visual Studio.
+
+### Current conclusion
+
+The prototype has proven that:
+
+- the extension can launch the real app under SharpDbg
+- XAML payloads can be sent through the debugger path
+- a runtime helper can mutate live WPF content when evaluation succeeds
+
+But it has **not** yet proven a reliable always-available apply mechanism for normal "click hot reload while the app is running" usage.
+
+That is the main open problem now.
+## Current Runtime Hot Reload Blocker
+
+The latest prototype still does not reliably support the intended user flow: click `Hot Reload (Debug)` while the real WPF app is running, and have the changed XAML applied immediately to that live app.
+
+### Current user-visible failure
+
+The current runtime path reaches SharpDbg, but the apply step can still fail with:
+
+`error: no stack frame available for evaluation`
+
+In the `WPF Hot Reload` output channel this appears after a manual push such as:
+
+- `[Runtime] Manual hot reload requested for ...\MainWindow.xaml`
+- `[Runtime] Hot reload rejected for ...\MainWindow.xaml: error: no stack frame available for evaluation`
+
+### What this means technically
+
+The current implementation still depends on SharpDbg pausing the target process and evaluating helper code inside the debuggee. That evaluation currently requires a usable managed IL stack frame.
+
+When the forced pause lands at the wrong moment, SharpDbg may stop:
+
+- in native runtime code
+- in an unmanaged frame
+- in a place where no suitable managed IL frame is currently exposed for evaluation
+
+So even though the transport, command routing, helper assembly, and basic apply logic all exist, the runtime apply can still fail because the debugger does not have a reliable evaluation context at the exact moment the user clicks the button.
+
+### Why this matters
+
+This is not just a small bug. It points to a weakness in the current architecture:
+
+- we can send the XAML payload correctly
+- we can load and invoke a helper when evaluation is available
+- but the act of applying the update is still tied to opportunistic debugger expression evaluation
+
+That means the system is not yet robust enough for the intended push-model UX.
+
+### What has already been improved
+
+A number of things are already working better than before:
+
+- The runtime flow is now push-based rather than auto-applying on every text edit.
+- The extension can launch the real WPF app under SharpDbg.
+- The hot reload command now logs clearly to the `WPF Hot Reload` output channel.
+- SharpDbg can accept the custom runtime message path used for hot reload.
+- The runtime helper can update live WPF content when evaluation succeeds.
+- SharpDbg was already hardened to search more broadly for fallback managed frames.
+
+So the current problem is no longer command plumbing or XAML transport. It is the reliability of the final "apply inside the debuggee" step.
+
+### Current design takeaway
+
+The main open question is whether debugger expression evaluation should remain the primary apply mechanism.
+
+Right now, the evidence suggests we may need a more deterministic runtime control point, for example:
+
+1. Bootstrap a helper into the process once through the debugger.
+2. Let that helper stay resident and expose a stable runtime-side apply path.
+3. Have hot reload requests delivered to that runtime component on the UI thread when safe.
+
+That would reduce the dependency on "whatever stack frame happened to be active when the user clicked the button."
+
+### Present conclusion
+
+The prototype has proven that runtime-first WPF hot reload is feasible, but it has not yet proven that SharpDbg-driven apply is reliable enough in its current form for normal user workflow.
+
+The current blocker is therefore:
+
+`How do we make runtime apply deterministic, instead of depending on an arbitrary managed evaluation frame being available at click time?`
+
+### DOTNET_STARTUP_HOOKS injection architecture (implemented)
+
+The blocker above has been addressed by removing the dependency on debugger expression evaluation entirely for the primary hot reload path.
+
+**How it works**
+
+1. Before launching the WPF app under SharpDbg, the extension builds the `WpfHotReload.Runtime` helper DLL and generates a unique pipe name (UUID-based).
+
+2. The extension passes two environment variables in the debug launch configuration:
+   - `DOTNET_STARTUP_HOOKS` → path to `WpfHotReload.Runtime.dll`
+   - `WPF_HOTRELOAD_PIPE` → the generated pipe name
+
+3. SharpDbg's launch handler now builds a Win32 environment block from the `env` config and passes it to `DbgShim.CreateProcessForLaunch` (previously this was a TODO).
+
+4. When the .NET runtime starts, it calls `StartupHook.Initialize()` from the helper assembly. This starts a background thread that polls for `Application.Current` to become available.
+
+5. Once the WPF Application exists, the background thread starts a `NamedPipeServerStream` listener using the pipe name from the env var.
+
+6. When the user clicks Hot Reload, the extension connects to `\\.\pipe\{pipeName}`, sends a JSON line with `filePath` and `xamlText`, and reads back the result. The pipe listener dispatches to the UI thread via `Dispatcher.Invoke` for safe visual tree mutation.
+
+**Why this works**
+
+- No debugger expression evaluation is needed. The helper is loaded by the runtime itself, before any debugging interaction.
+- Thread creation happens in normal managed code (the startup hook's background thread), not in a constrained debugger eval context.
+- The pipe listener is ready before the user ever clicks Hot Reload, so there is no first-request delay.
+- The pipe name is known to both sides because the extension generated it and passed it via env var.
+
+**Fallback**
+
+The DAP-based debugger evaluation path (`ApplyWpfHotReload`) is preserved as a fallback. If the pipe is not available (e.g., the startup hook failed), the extension falls back to the existing eval-based apply. This path can still fail with `error: no stack frame available for evaluation`, but it serves as a safety net for edge cases.

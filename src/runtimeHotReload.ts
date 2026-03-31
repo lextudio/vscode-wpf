@@ -1,6 +1,8 @@
 import * as fs from 'fs';
+import * as net from 'net';
 import * as path from 'path';
 import * as cp from 'child_process';
+import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { areProjectOutputsUpToDate, getLaunchTarget } from './projectDiscovery';
 import { buildProject } from './designerLauncher';
@@ -10,6 +12,7 @@ interface RuntimeSessionInfo {
   projectPath: string;
   xamlPath?: string;
   warnedUnsupportedApply: boolean;
+  pipeName?: string;
 }
 
 let outputChannel: vscode.OutputChannel | undefined;
@@ -17,6 +20,7 @@ let extensionPath: string | undefined;
 
 const runtimeSessionsByProject = new Map<string, RuntimeSessionInfo>();
 const runtimeSessionsByDebugId = new Map<string, RuntimeSessionInfo>();
+const pendingPipeNameByProject = new Map<string, string>();
 
 function getOutputChannel(): vscode.OutputChannel {
   if (!outputChannel) {
@@ -60,7 +64,9 @@ export function registerRuntimeHotReload(context: vscode.ExtensionContext): void
         projectPath,
         xamlPath: getXamlPathFromSession(session),
         warnedUnsupportedApply: false,
+        pipeName: pendingPipeNameByProject.get(projectPath),
       };
+      pendingPipeNameByProject.delete(projectPath);
 
       runtimeSessionsByProject.set(projectPath, info);
       runtimeSessionsByDebugId.set(session.id, info);
@@ -129,6 +135,11 @@ export async function startRuntimeHotReloadSession(
     }
   }
 
+  // Build the hot reload helper before launching so we can inject it
+  // via DOTNET_STARTUP_HOOKS. This makes the pipe listener available
+  // immediately when the WPF app starts, bypassing debugger eval entirely.
+  const helperAssemblyPath = await ensureRuntimeHelperBuilt();
+
   const launchTarget = getLaunchTarget(projectPath, dotnetPath);
   if (!launchTarget) {
     vscode.window.showErrorMessage(
@@ -140,6 +151,19 @@ export async function startRuntimeHotReloadSession(
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(projectPath));
   const name = `WPF Hot Reload: ${path.basename(projectPath, '.csproj')}`;
 
+  const pipeName = `wpf-hotreload-${crypto.randomUUID()}`;
+  const env: Record<string, string> = {
+    WPF_HOTRELOAD_PIPE: pipeName,
+  };
+  if (helperAssemblyPath) {
+    env['DOTNET_STARTUP_HOOKS'] = helperAssemblyPath;
+    getOutputChannel().appendLine(`[Runtime] Injecting helper via DOTNET_STARTUP_HOOKS: ${helperAssemblyPath}`);
+  }
+  getOutputChannel().appendLine(`[Runtime] Pipe name: ${pipeName}`);
+
+  // Store the pipe name so it's available when the debug session starts
+  pendingPipeNameByProject.set(projectPath, pipeName);
+
   getOutputChannel().appendLine(`[Runtime] Launching ${launchTarget.program} ${launchTarget.args.join(' ')}`.trim());
 
   return vscode.debug.startDebugging(workspaceFolder, {
@@ -149,6 +173,7 @@ export async function startRuntimeHotReloadSession(
     program: launchTarget.program,
     args: launchTarget.args,
     cwd: launchTarget.cwd,
+    env,
     stopAtEntry: false,
     projectPath,
     xamlPath,
@@ -167,13 +192,35 @@ export async function pushRuntimeXamlUpdate(
     return false;
   }
 
+  info.xamlPath = xamlPath;
+
+  // Primary path: named pipe (injected via DOTNET_STARTUP_HOOKS at launch).
+  // The pipe listener starts automatically when the WPF app initializes,
+  // so it should be available by the time the user clicks Hot Reload.
+  if (info.pipeName) {
+    const pipeResult = await sendViaPipe(info.pipeName, xamlPath, xamlText);
+    if (pipeResult) {
+      if (pipeResult.success) {
+        getOutputChannel().appendLine(`[Runtime] Applied XAML update via pipe for ${xamlPath}: ${pipeResult.message}`);
+        return true;
+      }
+
+      getOutputChannel().appendLine(`[Runtime] Pipe apply failed for ${xamlPath}: ${pipeResult.message}`);
+      vscode.window.showWarningMessage(`WPF hot reload failed: ${pipeResult.message}`);
+      return false;
+    }
+
+    getOutputChannel().appendLine(`[Runtime] Pipe not yet available, falling back to DAP for ${xamlPath}`);
+  }
+
+  // Fallback: DAP-based debugger evaluation path.
+  // Used when DOTNET_STARTUP_HOOKS injection didn't work or the pipe
+  // listener hasn't started yet.
   const helperAssemblyPath = await ensureRuntimeHelperBuilt();
   if (!helperAssemblyPath) {
     getOutputChannel().appendLine('[Runtime] Runtime helper could not be built or located.');
     return false;
   }
-
-  info.xamlPath = xamlPath;
 
   try {
     const result = await sendWpfHotReloadRequest(info.debugSession, helperAssemblyPath, xamlPath, xamlText);
@@ -184,6 +231,13 @@ export async function pushRuntimeXamlUpdate(
     }
 
     getOutputChannel().appendLine(`[Runtime] Applied XAML update for ${xamlPath}: ${result.message}`);
+
+    // Capture pipe name from response for subsequent requests
+    if (result.pipeName && !info.pipeName) {
+      info.pipeName = result.pipeName;
+      getOutputChannel().appendLine(`[Runtime] Pipe channel available: ${result.pipeName}`);
+    }
+
     return true;
   } catch (err) {
     getOutputChannel().appendLine(
@@ -199,6 +253,51 @@ export async function pushRuntimeXamlUpdate(
 
     return false;
   }
+}
+
+function sendViaPipe(
+  pipeName: string,
+  filePath: string,
+  xamlText: string
+): Promise<{ success: boolean; message: string } | null> {
+  return new Promise(resolve => {
+    const pipePath = `\\\\.\\pipe\\${pipeName}`;
+    const client = net.createConnection(pipePath, () => {
+      const request = JSON.stringify({ filePath, xamlText }) + '\n';
+      client.write(request);
+    });
+
+    let data = '';
+    client.on('data', chunk => {
+      data += chunk.toString();
+    });
+
+    client.on('end', () => {
+      try {
+        const line = data.trim();
+        if (!line) {
+          resolve(null);
+          return;
+        }
+
+        const response = JSON.parse(line) as { result?: string };
+        const result = response.result ?? 'unknown';
+        const success = !result.startsWith('error:');
+        resolve({ success, message: result });
+      } catch {
+        resolve(null);
+      }
+    });
+
+    client.on('error', () => {
+      resolve(null);
+    });
+
+    client.setTimeout(10000, () => {
+      client.destroy();
+      resolve(null);
+    });
+  });
 }
 
 class SharpDbgConfigurationProvider implements vscode.DebugConfigurationProvider {
@@ -313,12 +412,18 @@ async function ensureRuntimeHelperBuilt(): Promise<string | null> {
   return helperDll;
 }
 
+interface HotReloadResult {
+  success: boolean;
+  message: string;
+  pipeName?: string;
+}
+
 async function sendWpfHotReloadRequest(
   debugSession: vscode.DebugSession,
   helperAssemblyPath: string,
   filePath: string,
   xamlText: string
-): Promise<{ success: boolean; message: string }> {
+): Promise<HotReloadResult> {
   try {
     const response = await debugSession.customRequest('vsCustomMessage', {
       message: {
@@ -347,7 +452,7 @@ async function sendWpfHotReloadRequest(
   return parseLegacyHotReloadResponse(fallbackResponse);
 }
 
-function parseVsCustomMessageResponse(response: unknown): { success: boolean; message: string } | null {
+function parseVsCustomMessageResponse(response: unknown): HotReloadResult | null {
   const container = asRecord(response);
   const responseMessage = asRecord(container?.responseMessage) ?? asRecord(asRecord(container?.body)?.responseMessage);
   if (!responseMessage) {
@@ -365,14 +470,16 @@ function parseVsCustomMessageResponse(response: unknown): { success: boolean; me
   return { success, message };
 }
 
-function parseLegacyHotReloadResponse(response: unknown): { success: boolean; message: string } {
+function parseLegacyHotReloadResponse(response: unknown): HotReloadResult {
   const body = asRecord(response);
   const success = readBooleanField(body, 'success') ?? readBooleanField(asRecord(body?.body), 'success') ?? false;
   const message = readStringField(body ?? {}, 'message')
     ?? readStringField(asRecord(body?.body) ?? {}, 'message')
     ?? (success ? 'ok' : 'unknown response');
+  const pipeName = readStringField(body ?? {}, 'pipeName')
+    ?? readStringField(asRecord(body?.body) ?? {}, 'pipeName');
 
-  return { success, message };
+  return { success, message, pipeName };
 }
 
 function isRuntimeHelperUpToDate(projectPath: string, helperDllPath: string): boolean {
