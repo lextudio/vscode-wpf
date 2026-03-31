@@ -18,6 +18,10 @@ The visual designer for WPF from SharpDevelop is stable.
 
 The language server and XAML Hot Reload for WPF are under development.
 
+WPF on .NET 8+ is the focus. WPF on older .NET or .NET Core releases are best efforts.
+
+WPF on .NET Framework is being investigated, but no promise on whether it will be supported.
+
 ## License
 
 MIT
