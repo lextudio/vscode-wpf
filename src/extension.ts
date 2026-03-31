@@ -320,7 +320,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       vscode.window.showInformationMessage(
-        `Started WPF hot reload session for ${path.basename(projectPath)}. Click Hot Reload again to push the current XAML file.`
+        `Started WPF hot reload session for ${path.basename(projectPath)}. Once the app finishes loading, click Hot Reload again to push the current XAML file.`
       );
     })
   );

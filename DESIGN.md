@@ -4,6 +4,46 @@
 
 This extension integrates the [WpfDesigner](https://github.com/icsharpcode/WpfDesigner) (XamlDesigner) into VS Code so that editing `.xaml` files has a fluent, round-trip visual design experience.
 
+## Latest Status (March 31, 2026)
+
+Runtime hot reload is now **runtime-first and push-based** and works in the main flow:
+
+1. Click `WPF: Hot Reload (Debug)` once to launch the real WPF app under SharpDbg.
+2. Edit XAML in VS Code.
+3. Click `WPF: Hot Reload (Debug)` again to push the current snapshot into the running app.
+
+### Implemented architecture updates
+
+- Added **SharpDbg** as a submodule-backed debugger path for runtime sessions.
+- Added a dedicated command/action: `WPF: Hot Reload (Debug)` (kept `WPF: Launch Designer` as fallback).
+- Added startup-hook injection:
+  - `DOTNET_STARTUP_HOOKS` points to `WpfHotReload.Runtime.dll`.
+  - `WPF_HOTRELOAD_PIPE` carries a per-session named pipe.
+- Runtime helper now starts from startup hook and exposes a named-pipe command channel.
+- Extension now prefers the runtime pipe channel and only uses debugger bootstrap/eval as fallback.
+- Runtime hot reload is **manual push**, not auto-apply-on-edit.
+
+### Important reliability fixes completed
+
+- Fixed SharpDbg launch env propagation issues that caused COM `ERROR_INVALID_PARAMETER` in app launch flow.
+- Removed startup-hook behavior that touched WPF from unsafe startup-thread polling.
+- Added runtime pipe readiness probing (`agent.ready`) before fallback bootstrap.
+- Added parse diagnostics with exception type + inner exception text.
+- Added safe XML property-update fallback for common edits (e.g., `Background`, `Text`, `Margin`, `SelectedIndex`) to avoid parser-driven first-chance exception stalls.
+
+### Current behavior summary
+
+- The app is launched as the real debug target (not a designer simulation).
+- Hot reload applies when the user explicitly pushes.
+- The `WPF Hot Reload` output channel shows session lifecycle and apply results.
+- WpfDesigner remains available as an optional backup path.
+
+### Remaining known gaps
+
+- Full structural XAML mutation still depends on parser/object-graph reconstruction and can fail on complex markup patterns.
+- Visual Studio-level parity (all edit shapes, perfect state retention, full EnC-style behavior) is not complete yet.
+- More end-to-end automation and richer live-instance mapping are still desirable.
+
 ---
 
 ## Platform Support

@@ -1,5 +1,7 @@
 using System.Collections;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
@@ -12,6 +14,9 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
+using System.Xaml;
+using System.Xml.Linq;
+using System.Xml;
 
 namespace WpfHotReload.Runtime;
 
@@ -179,14 +184,25 @@ public static class WpfHotReloadAgent
         var xClass = TryExtractXClass(xamlText);
         var sanitizedXaml = StripCompileOnlyAttributes(xamlText);
 
+        // Fast/safe path first: apply named element property updates directly from XML.
+        // This avoids object graph reconstruction and prevents debugger-breaking first-chance
+        // exceptions for simple edits (e.g. colors/text/margins).
+        if (TryApplyNamedElementPropertyUpdates(sanitizedXaml, out var xmlFallbackMessage))
+        {
+            return $"ok: {xmlFallbackMessage}";
+        }
+
         object parsedRoot;
         try
         {
-            parsedRoot = XamlReader.Parse(sanitizedXaml);
+            parsedRoot = ParseXamlIgnoringEventMembers(sanitizedXaml);
         }
         catch (Exception ex)
         {
-            return $"error: parse failed: {ex.Message}";
+            var innerMessage = ex.InnerException?.Message;
+            return innerMessage is null
+                ? $"error: parse failed ({ex.GetType().Name}): {ex.Message}"
+                : $"error: parse failed ({ex.GetType().Name}): {ex.Message} | inner: {innerMessage}";
         }
 
         var liveRoot = FindLiveRoot(filePath, xClass, parsedRoot);
@@ -207,6 +223,7 @@ public static class WpfHotReloadAgent
 
         return query switch
         {
+            "agent.ready" => "1",
             "PrimaryButton.Background" => DescribeBrushColor(FindNamedElement(Application.Current?.MainWindow, "PrimaryButton") as Control),
             "PaneTitle.Text" => (FindNamedElement(Application.Current?.MainWindow, "PaneTitle") as TextBlock)?.Text,
             "PaneBody.Text" => (FindNamedElement(Application.Current?.MainWindow, "PaneBody") as TextBlock)?.Text,
@@ -1020,5 +1037,176 @@ public static class WpfHotReloadAgent
             RegexOptions.CultureInvariant);
 
         return stripped;
+    }
+
+    private static object ParseXamlIgnoringEventMembers(string xamlText)
+    {
+        using var textReader = new StringReader(xamlText);
+        using var xmlReader = XmlReader.Create(textReader, new XmlReaderSettings
+        {
+            DtdProcessing = DtdProcessing.Prohibit,
+        });
+
+        using var xamlReader = new XamlXmlReader(xmlReader);
+        var objectWriter = new XamlObjectWriter(xamlReader.SchemaContext);
+
+        while (xamlReader.Read())
+        {
+            if (xamlReader.NodeType == XamlNodeType.StartMember &&
+                xamlReader.Member?.IsEvent == true)
+            {
+                xamlReader.Skip();
+                continue;
+            }
+
+            objectWriter.WriteNode(xamlReader);
+        }
+
+        return objectWriter.Result
+            ?? throw new InvalidOperationException("XAML parse produced no root object.");
+    }
+
+    private static bool TryApplyNamedElementPropertyUpdates(string xamlText, out string message)
+    {
+        message = "xml fallback did not find applicable named property updates";
+        try
+        {
+            var app = Application.Current;
+            var mainWindow = app?.MainWindow;
+            if (mainWindow is null)
+            {
+                message = "xml fallback requires an active MainWindow";
+                return false;
+            }
+
+            var document = XDocument.Parse(xamlText, LoadOptions.None);
+            var xNamespace = (XNamespace)"http://schemas.microsoft.com/winfx/2006/xaml";
+            var updatedProperties = 0;
+            var updatedElements = 0;
+
+            if (document.Root is null)
+            {
+                message = "xml fallback could not find a XAML root element";
+                return false;
+            }
+
+            foreach (var element in document.Root.DescendantsAndSelf())
+            {
+                var elementName = (string?)element.Attribute(xNamespace + "Name");
+                if (string.IsNullOrWhiteSpace(elementName))
+                {
+                    continue;
+                }
+
+                var liveElement = FindNamedElement(mainWindow, elementName!);
+                if (liveElement is null)
+                {
+                    continue;
+                }
+
+                var perElementUpdates = 0;
+                foreach (var attribute in element.Attributes())
+                {
+                    if (!ShouldTryApplyAttribute(attribute))
+                    {
+                        continue;
+                    }
+
+                    if (TryApplyPropertyValue(liveElement, attribute.Name.LocalName, attribute.Value))
+                    {
+                        perElementUpdates++;
+                    }
+                }
+
+                if (perElementUpdates > 0)
+                {
+                    updatedProperties += perElementUpdates;
+                    updatedElements++;
+                }
+            }
+
+            if (updatedProperties == 0)
+            {
+                message = "xml fallback found no matching named properties to update";
+                return false;
+            }
+
+            message = $"xml fallback updated {updatedProperties} property value(s) across {updatedElements} element(s)";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            message = $"xml fallback failed: {ex.GetType().Name}: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static bool ShouldTryApplyAttribute(XAttribute attribute)
+    {
+        if (attribute.IsNamespaceDeclaration)
+        {
+            return false;
+        }
+
+        if (attribute.Name.NamespaceName == "http://schemas.microsoft.com/winfx/2006/xaml")
+        {
+            return false;
+        }
+
+        if (attribute.Name.NamespaceName == "http://schemas.openxmlformats.org/markup-compatibility/2006")
+        {
+            return false;
+        }
+
+        if (attribute.Name.NamespaceName == "http://schemas.microsoft.com/expression/blend/2008")
+        {
+            return false;
+        }
+
+        // Attached properties (Grid.Row, etc.) are skipped in this fallback path.
+        if (attribute.Name.LocalName.Contains('.'))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryApplyPropertyValue(object target, string propertyName, string rawValue)
+    {
+        var property = target.GetType().GetProperty(propertyName);
+        if (property is null || !property.CanWrite)
+        {
+            return false;
+        }
+
+        try
+        {
+            object? convertedValue;
+            if (property.PropertyType == typeof(string))
+            {
+                convertedValue = rawValue;
+            }
+            else
+            {
+                var converter = TypeDescriptor.GetConverter(property.PropertyType);
+                if (converter is null || !converter.CanConvertFrom(typeof(string)))
+                {
+                    return false;
+                }
+
+                convertedValue = converter.ConvertFrom(
+                    context: null,
+                    culture: CultureInfo.InvariantCulture,
+                    value: rawValue);
+            }
+
+            property.SetValue(target, convertedValue);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

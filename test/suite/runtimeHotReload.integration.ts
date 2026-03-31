@@ -55,6 +55,7 @@ export async function run(): Promise<void> {
     await vscode.commands.executeCommand('wpf.debugHotReload', editor.document.uri);
 
     const sessionInfo = await waitForRuntimeSession(sampleProjectPath);
+    await vscode.commands.executeCommand('wpf.debugHotReload', editor.document.uri);
     await waitForPipe(sessionInfo.pipeName);
 
     const initialBackground = await queryPipeValue(sessionInfo.pipeName, 'PrimaryButton.Background');

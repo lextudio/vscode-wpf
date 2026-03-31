@@ -1,4 +1,3 @@
-using System.Windows;
 using WpfHotReload.Runtime;
 
 // DOTNET_STARTUP_HOOKS entry point.
@@ -9,27 +8,15 @@ internal class StartupHook
 {
     internal static void Initialize()
     {
-        var thread = new Thread(WaitForApplicationAndStartListener)
+        try
         {
-            IsBackground = true,
-            Name = "WpfHotReloadStartup",
-        };
-        thread.Start();
-    }
-
-    private static void WaitForApplicationAndStartListener()
-    {
-        // Poll until Application.Current is available (WPF app has started).
-        // Typically takes a few hundred milliseconds after Main() begins.
-        for (var i = 0; i < 300; i++) // up to ~30 seconds
+            // Avoid touching WPF objects from startup-hook threads.
+            // The agent itself is resilient when Application.Current is not ready yet.
+            WpfHotReloadAgent.EnsurePipeListenerStarted();
+        }
+        catch
         {
-            Thread.Sleep(100);
-            var app = Application.Current;
-            if (app is not null)
-            {
-                WpfHotReloadAgent.EnsurePipeListenerStarted();
-                return;
-            }
+            // Never crash the host app because of hot reload plumbing.
         }
     }
 }

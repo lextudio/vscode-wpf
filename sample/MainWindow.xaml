@@ -16,7 +16,7 @@
             Margin="49,45,0,0"
             HorizontalAlignment="Left"
             VerticalAlignment="Top"
-            Background="Red"
+            Background="Green"
             Grid.Column="0"
             Grid.Row="0" />
     <TextBlock>
