@@ -221,23 +221,11 @@ public static class WpfHotReloadAgent
     {
         ApplyFrameworkElement(livePanel, parsedPanel);
         var parsedChildren = parsedPanel.Children.Cast<UIElement>().ToList();
-        if (CanApplyChildrenInPlace(livePanel.Children.Cast<UIElement>().ToList(), parsedChildren))
+        var liveChildren = livePanel.Children.Cast<UIElement>().ToList();
+        if (!TryApplyPanelChildrenInPlace(livePanel, parsedPanel, liveChildren, parsedChildren))
         {
-            for (var i = 0; i < parsedChildren.Count; i++)
-            {
-                var liveChild = livePanel.Children[i];
-                var parsedChild = parsedChildren[i];
-                if (!TryApplyObject(liveChild, parsedChild))
-                {
-                    ReplacePanelChildren(livePanel, parsedPanel, parsedChildren);
-                    return;
-                }
-            }
-
-            return;
+            ReplacePanelChildren(livePanel, parsedPanel, parsedChildren);
         }
-
-        ReplacePanelChildren(livePanel, parsedPanel, parsedChildren);
     }
 
     private static void ApplyDecorator(Decorator liveDecorator, Decorator parsedDecorator)
@@ -407,19 +395,51 @@ public static class WpfHotReloadAgent
         return NameMatches(liveContent, parsedContent);
     }
 
-    private static bool CanApplyChildrenInPlace(IReadOnlyList<UIElement> liveChildren, IReadOnlyList<UIElement> parsedChildren)
+    private static bool TryApplyPanelChildrenInPlace(
+        Panel livePanel,
+        Panel parsedPanel,
+        IReadOnlyList<UIElement> liveChildren,
+        IReadOnlyList<UIElement> parsedChildren)
     {
-        if (liveChildren.Count != parsedChildren.Count)
+        var liveNamedChildren = liveChildren
+            .Select((child, index) => new { child, index, name = GetElementName(child) })
+            .Where(entry => string.IsNullOrWhiteSpace(entry.name) is false)
+            .GroupBy(entry => entry.name!, StringComparer.Ordinal)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(group => group.Key, group => (group.Single().child, group.Single().index), StringComparer.Ordinal);
+
+        var usedLiveIndexes = new HashSet<int>();
+        var reorderedChildren = new List<UIElement>(parsedChildren.Count);
+        var nextPositionalLiveIndex = 0;
+
+        foreach (var parsedChild in parsedChildren)
         {
-            return false;
+            var matchingLiveChild = FindMatchingLiveChild(
+                parsedChild,
+                liveChildren,
+                liveNamedChildren,
+                usedLiveIndexes,
+                ref nextPositionalLiveIndex);
+
+            if (matchingLiveChild is not null)
+            {
+                if (!TryApplyObject(matchingLiveChild, parsedChild))
+                {
+                    return false;
+                }
+
+                reorderedChildren.Add(matchingLiveChild);
+                continue;
+            }
+
+            reorderedChildren.Add(parsedChild);
         }
 
-        for (var i = 0; i < liveChildren.Count; i++)
+        parsedPanel.Children.Clear();
+        livePanel.Children.Clear();
+        foreach (var child in reorderedChildren)
         {
-            if (!CanApplyChildInPlace(liveChildren[i], parsedChildren[i]))
-            {
-                return false;
-            }
+            livePanel.Children.Add(child);
         }
 
         return true;
@@ -460,6 +480,44 @@ public static class WpfHotReloadAgent
         {
             livePanel.Children.Add(child);
         }
+    }
+
+    private static UIElement? FindMatchingLiveChild(
+        UIElement parsedChild,
+        IReadOnlyList<UIElement> liveChildren,
+        IReadOnlyDictionary<string, (UIElement child, int index)> liveNamedChildren,
+        ISet<int> usedLiveIndexes,
+        ref int nextPositionalLiveIndex)
+    {
+        var parsedName = GetElementName(parsedChild);
+        if (!string.IsNullOrWhiteSpace(parsedName) &&
+            liveNamedChildren.TryGetValue(parsedName, out var namedMatch) &&
+            !usedLiveIndexes.Contains(namedMatch.index) &&
+            namedMatch.child.GetType() == parsedChild.GetType())
+        {
+            usedLiveIndexes.Add(namedMatch.index);
+            return namedMatch.child;
+        }
+
+        while (nextPositionalLiveIndex < liveChildren.Count)
+        {
+            var liveIndex = nextPositionalLiveIndex++;
+            if (usedLiveIndexes.Contains(liveIndex))
+            {
+                continue;
+            }
+
+            var liveChild = liveChildren[liveIndex];
+            if (!CanApplyChildInPlace(liveChild, parsedChild))
+            {
+                continue;
+            }
+
+            usedLiveIndexes.Add(liveIndex);
+            return liveChild;
+        }
+
+        return null;
     }
 
     private static void DetachFromParent(DependencyObject dependencyObject)
