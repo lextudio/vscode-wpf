@@ -1,9 +1,11 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 using XamlLanguageServer.Wpf.Diagnostics;
 using XamlLanguageServer.Wpf.Workspace;
 using XamlLanguageServer.Wpf.Wpf;
 using XamlToCSharpGenerator.LanguageService;
+using XamlToCSharpGenerator.LanguageService.Symbols;
 using XamlToCSharpGenerator.LanguageService.Workspace;
 using XamlToCSharpGenerator.LanguageServer.Protocol;
 using XamlToCSharpGenerator.LanguageServer.Server;
@@ -32,6 +34,23 @@ var options = new XamlLanguageServiceOptions(workspaceRoot);
 // TieredCompilationProvider manages the handoff between tiers and owns the
 // background prewarm task.
 var fastSnapshot = WpfFastCompilationProvider.BuildFastSnapshot();
+if (fastSnapshot?.Compilation is { } fastCompilation)
+{
+    var prewarmStopwatch = Stopwatch.StartNew();
+    try
+    {
+        Console.Error.WriteLine(
+            "[WPF-LS] Tier-1 metadata warmup: loading cached WPF control/profile metadata " +
+            "(or building it once) so default WPF IntelliSense is available before MSBuild completes.");
+        _ = AvaloniaTypeIndex.Create(fastCompilation);
+        Console.Error.WriteLine($"[WPF-LS] Tier-1 type index ready in {prewarmStopwatch.ElapsedMilliseconds} ms.");
+        Console.Error.WriteLine(WpfFastCompilationProvider.PersistTypeIndexToDisk(fastCompilation));
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"[WPF-LS] Tier-1 type index prewarm failed: {ex.Message}");
+    }
+}
 var tieredProvider = new TieredCompilationProvider(
     fullProvider: new DiagnosticCompilationProvider(new MsBuildCompilationProvider()),
     fastSnapshot: fastSnapshot);

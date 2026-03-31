@@ -8,8 +8,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>wpf-xaml-ls</AssemblyName>
     <RootNamespace>XamlLanguageServer.Wpf</RootNamespace>
-    <!-- Pre-compile hot paths to native code at publish time to reduce cold-start
-         JIT latency (Idea 2 from COMPLETION.md). -->
+    <!-- Keep Debug inner-loop fast: no R2R during VS Code debugging/local iteration. -->
+    <PublishReadyToRun>false</PublishReadyToRun>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <!-- Pre-compile hot paths to native code at publish time for shipped binaries. -->
     <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
 
@@ -19,5 +23,11 @@
     <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.LanguageServer\XamlToCSharpGenerator.LanguageServer.csproj" />
     <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Framework.Abstractions\XamlToCSharpGenerator.Framework.Abstractions.csproj" />
     <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Core\XamlToCSharpGenerator.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>XamlLanguageServer.Wpf.Tests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 </Project>
