@@ -152,18 +152,12 @@ public static class WpfHotReloadAgent
 
     private static void ApplyWindow(Window liveWindow, Window parsedWindow)
     {
+        ApplyFrameworkElement(liveWindow, parsedWindow);
+        ApplyControl(liveWindow, parsedWindow);
         liveWindow.Title = parsedWindow.Title;
-        liveWindow.Width = parsedWindow.Width;
-        liveWindow.Height = parsedWindow.Height;
-        liveWindow.MinWidth = parsedWindow.MinWidth;
-        liveWindow.MinHeight = parsedWindow.MinHeight;
-        liveWindow.MaxWidth = parsedWindow.MaxWidth;
-        liveWindow.MaxHeight = parsedWindow.MaxHeight;
         liveWindow.SizeToContent = parsedWindow.SizeToContent;
         liveWindow.WindowStyle = parsedWindow.WindowStyle;
         liveWindow.ResizeMode = parsedWindow.ResizeMode;
-        liveWindow.Background = parsedWindow.Background;
-        liveWindow.Resources = parsedWindow.Resources;
 
         if (parsedWindow.Content is object content)
         {
@@ -174,7 +168,8 @@ public static class WpfHotReloadAgent
 
     private static void ApplyContentControl(ContentControl liveControl, ContentControl parsedControl)
     {
-        liveControl.Resources = parsedControl.Resources;
+        ApplyFrameworkElement(liveControl, parsedControl);
+        ApplyControl(liveControl, parsedControl);
         if (parsedControl.Content is object content)
         {
             parsedControl.Content = null;
@@ -186,7 +181,8 @@ public static class WpfHotReloadAgent
         HeaderedContentControl liveControl,
         HeaderedContentControl parsedControl)
     {
-        liveControl.Resources = parsedControl.Resources;
+        ApplyFrameworkElement(liveControl, parsedControl);
+        ApplyControl(liveControl, parsedControl);
         liveControl.Header = parsedControl.Header;
         if (parsedControl.Content is object content)
         {
@@ -197,7 +193,7 @@ public static class WpfHotReloadAgent
 
     private static void ApplyPanel(Panel livePanel, Panel parsedPanel)
     {
-        livePanel.Resources = parsedPanel.Resources;
+        ApplyFrameworkElement(livePanel, parsedPanel);
         var children = parsedPanel.Children.Cast<UIElement>().ToList();
         parsedPanel.Children.Clear();
         livePanel.Children.Clear();
@@ -209,6 +205,7 @@ public static class WpfHotReloadAgent
 
     private static void ApplyDecorator(Decorator liveDecorator, Decorator parsedDecorator)
     {
+        ApplyFrameworkElement(liveDecorator, parsedDecorator);
         if (parsedDecorator.Child is UIElement child)
         {
             parsedDecorator.Child = null;
@@ -218,7 +215,8 @@ public static class WpfHotReloadAgent
 
     private static void ApplyItemsControl(ItemsControl liveItemsControl, ItemsControl parsedItemsControl)
     {
-        liveItemsControl.Resources = parsedItemsControl.Resources;
+        ApplyFrameworkElement(liveItemsControl, parsedItemsControl);
+        ApplyControl(liveItemsControl, parsedItemsControl);
         if (parsedItemsControl.ItemsSource is not null)
         {
             liveItemsControl.ItemsSource = parsedItemsControl.ItemsSource;
@@ -247,6 +245,43 @@ public static class WpfHotReloadAgent
         {
             liveDictionary.MergedDictionaries.Add(mergedDictionary);
         }
+    }
+
+    private static void ApplyFrameworkElement(FrameworkElement liveElement, FrameworkElement parsedElement)
+    {
+        liveElement.Width = parsedElement.Width;
+        liveElement.Height = parsedElement.Height;
+        liveElement.MinWidth = parsedElement.MinWidth;
+        liveElement.MinHeight = parsedElement.MinHeight;
+        liveElement.MaxWidth = parsedElement.MaxWidth;
+        liveElement.MaxHeight = parsedElement.MaxHeight;
+        liveElement.Margin = parsedElement.Margin;
+        liveElement.HorizontalAlignment = parsedElement.HorizontalAlignment;
+        liveElement.VerticalAlignment = parsedElement.VerticalAlignment;
+        liveElement.FlowDirection = parsedElement.FlowDirection;
+        liveElement.Style = parsedElement.Style;
+        liveElement.Resources = parsedElement.Resources;
+        liveElement.ToolTip = parsedElement.ToolTip;
+        liveElement.Tag = parsedElement.Tag;
+        liveElement.Visibility = parsedElement.Visibility;
+        liveElement.DataContext = parsedElement.DataContext;
+    }
+
+    private static void ApplyControl(Control liveControl, Control parsedControl)
+    {
+        liveControl.Background = parsedControl.Background;
+        liveControl.BorderBrush = parsedControl.BorderBrush;
+        liveControl.BorderThickness = parsedControl.BorderThickness;
+        liveControl.Padding = parsedControl.Padding;
+        liveControl.FontFamily = parsedControl.FontFamily;
+        liveControl.FontSize = parsedControl.FontSize;
+        liveControl.FontStretch = parsedControl.FontStretch;
+        liveControl.FontStyle = parsedControl.FontStyle;
+        liveControl.FontWeight = parsedControl.FontWeight;
+        liveControl.Foreground = parsedControl.Foreground;
+        liveControl.HorizontalContentAlignment = parsedControl.HorizontalContentAlignment;
+        liveControl.VerticalContentAlignment = parsedControl.VerticalContentAlignment;
+        liveControl.IsEnabled = parsedControl.IsEnabled;
     }
 
     private static IEnumerable<object> EnumerateLiveCandidates()
