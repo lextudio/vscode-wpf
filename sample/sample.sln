@@ -1,0 +1,30 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "sample", "sample.csproj", "{8DC1225B-E822-B7EC-EED6-328F5E16D6C6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "sample_uujtxtpg_wpftmp", "sample_uujtxtpg_wpftmp.csproj", "{3FC4563B-5691-23D3-046E-1B346915519F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8DC1225B-E822-B7EC-EED6-328F5E16D6C6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8DC1225B-E822-B7EC-EED6-328F5E16D6C6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8DC1225B-E822-B7EC-EED6-328F5E16D6C6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8DC1225B-E822-B7EC-EED6-328F5E16D6C6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3FC4563B-5691-23D3-046E-1B346915519F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3FC4563B-5691-23D3-046E-1B346915519F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3FC4563B-5691-23D3-046E-1B346915519F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3FC4563B-5691-23D3-046E-1B346915519F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {C68F9D3A-1D70-4D12-9179-ADE597B79915}
+	EndGlobalSection
+EndGlobal

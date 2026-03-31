@@ -105,6 +105,10 @@ export function hasRunningRuntimeSession(projectPath: string): boolean {
   return runtimeSessionsByProject.has(projectPath);
 }
 
+export function getRuntimeSessionInfo(projectPath: string): RuntimeSessionInfo | undefined {
+  return runtimeSessionsByProject.get(projectPath);
+}
+
 export async function startRuntimeHotReloadSession(
   context: vscode.ExtensionContext,
   projectPath: string,
@@ -197,20 +201,28 @@ export async function pushRuntimeXamlUpdate(
   // Primary path: named pipe (injected via DOTNET_STARTUP_HOOKS at launch).
   // The pipe listener starts automatically when the WPF app initializes,
   // so it should be available by the time the user clicks Hot Reload.
+  // Retry a few times in case the pipe listener is still starting up.
   if (info.pipeName) {
-    const pipeResult = await sendViaPipe(info.pipeName, xamlPath, xamlText);
-    if (pipeResult) {
-      if (pipeResult.success) {
-        getOutputChannel().appendLine(`[Runtime] Applied XAML update via pipe for ${xamlPath}: ${pipeResult.message}`);
-        return true;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        getOutputChannel().appendLine(`[Runtime] Retrying pipe connection (attempt ${attempt + 1}/3)...`);
+        await new Promise(r => setTimeout(r, 1000));
       }
 
-      getOutputChannel().appendLine(`[Runtime] Pipe apply failed for ${xamlPath}: ${pipeResult.message}`);
-      vscode.window.showWarningMessage(`WPF hot reload failed: ${pipeResult.message}`);
-      return false;
+      const pipeResult = await sendViaPipe(info.pipeName, xamlPath, xamlText);
+      if (pipeResult) {
+        if (pipeResult.success) {
+          getOutputChannel().appendLine(`[Runtime] Applied XAML update via pipe for ${xamlPath}: ${pipeResult.message}`);
+          return true;
+        }
+
+        getOutputChannel().appendLine(`[Runtime] Pipe apply failed for ${xamlPath}: ${pipeResult.message}`);
+        vscode.window.showWarningMessage(`WPF hot reload failed: ${pipeResult.message}`);
+        return false;
+      }
     }
 
-    getOutputChannel().appendLine(`[Runtime] Pipe not yet available, falling back to DAP for ${xamlPath}`);
+    getOutputChannel().appendLine(`[Runtime] Pipe not available after 3 attempts, falling back to DAP for ${xamlPath}`);
   }
 
   // Fallback: DAP-based debugger evaluation path.
@@ -289,7 +301,8 @@ function sendViaPipe(
       }
     });
 
-    client.on('error', () => {
+    client.on('error', (err) => {
+      getOutputChannel().appendLine(`[Runtime] Pipe connection error: ${err.message}`);
       resolve(null);
     });
 

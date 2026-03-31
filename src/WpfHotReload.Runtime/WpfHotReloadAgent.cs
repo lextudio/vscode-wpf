@@ -85,10 +85,20 @@ public static class WpfHotReloadAgent
                 }
 
                 string result;
+                string? responseValue = null;
                 try
                 {
                     var request = JsonSerializer.Deserialize<PipeRequest>(line, JsonOptions);
-                    if (request?.FilePath is null || request.XamlText is null)
+                    if (request is null)
+                    {
+                        result = "error: invalid request";
+                    }
+                    else if (string.Equals(request.Kind, "query", StringComparison.Ordinal))
+                    {
+                        result = "ok";
+                        responseValue = QueryValue(request.Query);
+                    }
+                    else if (request.FilePath is null || request.XamlText is null)
                     {
                         result = "error: invalid request";
                     }
@@ -114,7 +124,7 @@ public static class WpfHotReloadAgent
                 }
 
                 Log("Writing response...");
-                writer.WriteLine(JsonSerializer.Serialize(new PipeResponse { Result = result }, JsonOptions));
+                writer.WriteLine(JsonSerializer.Serialize(new PipeResponse { Result = result, Value = responseValue }, JsonOptions));
                 Log("Response written");
             }
             catch (OperationCanceledException)
@@ -133,13 +143,16 @@ public static class WpfHotReloadAgent
 
     private sealed class PipeRequest
     {
+        public string? Kind { get; set; }
         public string? FilePath { get; set; }
         public string? XamlText { get; set; }
+        public string? Query { get; set; }
     }
 
     private sealed class PipeResponse
     {
         public string? Result { get; set; }
+        public string? Value { get; set; }
     }
 
     public static string ApplyXamlTextFromBase64(string filePath, string base64Text)
@@ -183,6 +196,38 @@ public static class WpfHotReloadAgent
         }
 
         return ApplyParsedRoot(liveRoot, parsedRoot);
+    }
+
+    private static string? QueryValue(string? query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return null;
+        }
+
+        return query switch
+        {
+            "PrimaryButton.Background" => DescribeBrushColor(FindNamedElement(Application.Current?.MainWindow, "PrimaryButton") as Control),
+            "PaneTitle.Text" => (FindNamedElement(Application.Current?.MainWindow, "PaneTitle") as TextBlock)?.Text,
+            "PaneBody.Text" => (FindNamedElement(Application.Current?.MainWindow, "PaneBody") as TextBlock)?.Text,
+            "PaneList.SelectedIndex" => DescribeSelectorIndex(FindNamedElement(Application.Current?.MainWindow, "PaneList") as Selector),
+            _ => null,
+        };
+    }
+
+    private static string? DescribeBrushColor(Control? control)
+    {
+        return control?.Background switch
+        {
+            SolidColorBrush solidColorBrush => solidColorBrush.Color.ToString(),
+            null => null,
+            var brush => brush.ToString(),
+        };
+    }
+
+    private static string? DescribeSelectorIndex(Selector? selector)
+    {
+        return selector?.SelectedIndex.ToString();
     }
 
     private static object? FindLiveRoot(string filePath, string? xClass, object parsedRoot)
@@ -915,8 +960,13 @@ public static class WpfHotReloadAgent
         }
     }
 
-    private static object? FindNamedElement(DependencyObject root, string name)
+    private static object? FindNamedElement(DependencyObject? root, string name)
     {
+        if (root is null)
+        {
+            return null;
+        }
+
         if (GetElementName(root) == name)
         {
             return root;

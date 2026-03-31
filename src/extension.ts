@@ -23,6 +23,7 @@ import {
 import { disposeStatusBar, getStatusBarItem, updateStatusBar } from './statusBar';
 import { getPreviewProjectContext, startLanguageServer, stopLanguageServer } from './languageServer';
 import {
+  getRuntimeSessionInfo,
   hasRunningRuntimeSession,
   pushRuntimeXamlUpdate,
   registerRuntimeHotReload,
@@ -346,6 +347,40 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('wpf.buildDesignerTools', () =>
       buildDesignerTools(context)
     )
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf._test.setProject', async (args?: { filePath?: string; projectPath?: string }) => {
+      const projectPath = args?.projectPath;
+      const filePath = args?.filePath;
+      if (!projectPath || !filePath) {
+        throw new Error('wpf._test.setProject requires filePath and projectPath.');
+      }
+
+      selectedProjects.set(getWorkspaceFolderKey(filePath), projectPath);
+      updateStatusBar(vscode.window.activeTextEditor, projectPath);
+      return true;
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf._test.getRuntimeSessionInfo', async (projectPath?: string) => {
+      if (!projectPath) {
+        return null;
+      }
+
+      const info = getRuntimeSessionInfo(projectPath);
+      if (!info) {
+        return null;
+      }
+
+      return {
+        projectPath: info.projectPath,
+        xamlPath: info.xamlPath,
+        pipeName: info.pipeName ?? null,
+        debugSessionId: info.debugSession.id,
+      };
+    })
   );
 
   // -------------------------------------------------------------------------

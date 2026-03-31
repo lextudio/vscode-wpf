@@ -36,9 +36,11 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
+    "compile:tests": "tsc -p test/tsconfig.json",
     "watch": "tsc -w -p .",
     "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js --sourcemap",
     "watch:build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js --sourcemap --watch",
+    "test:integration:hotreload": "npm run build && npm run compile:tests && node ./test/runTest.js",
     "build-designer": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-designer.ps1",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./dist.windows.ps1",
     "package:publish:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./dist.windows.ps1 -Publish",
