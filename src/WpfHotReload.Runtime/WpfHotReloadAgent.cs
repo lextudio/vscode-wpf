@@ -104,50 +104,89 @@ public static class WpfHotReloadAgent
 
     private static string ApplyParsedRoot(object liveRoot, object parsedRoot)
     {
-        if (liveRoot is Window liveWindow && parsedRoot is Window parsedWindow)
+        if (TryApplyObject(liveRoot, parsedRoot))
         {
-            ApplyWindow(liveWindow, parsedWindow);
-            return "ok: window updated";
-        }
-
-        if (liveRoot is ContentControl liveContentControl && parsedRoot is ContentControl parsedContentControl)
-        {
-            ApplyContentControl(liveContentControl, parsedContentControl);
-            return "ok: content control updated";
-        }
-
-        if (liveRoot is HeaderedContentControl liveHeaderedContentControl &&
-            parsedRoot is HeaderedContentControl parsedHeaderedContentControl)
-        {
-            ApplyHeaderedContentControl(liveHeaderedContentControl, parsedHeaderedContentControl);
-            return "ok: headered content control updated";
-        }
-
-        if (liveRoot is Panel livePanel && parsedRoot is Panel parsedPanel)
-        {
-            ApplyPanel(livePanel, parsedPanel);
-            return "ok: panel updated";
-        }
-
-        if (liveRoot is Decorator liveDecorator && parsedRoot is Decorator parsedDecorator)
-        {
-            ApplyDecorator(liveDecorator, parsedDecorator);
-            return "ok: decorator updated";
-        }
-
-        if (liveRoot is ItemsControl liveItemsControl && parsedRoot is ItemsControl parsedItemsControl)
-        {
-            ApplyItemsControl(liveItemsControl, parsedItemsControl);
-            return "ok: items control updated";
-        }
-
-        if (liveRoot is ResourceDictionary liveDictionary && parsedRoot is ResourceDictionary parsedDictionary)
-        {
-            ApplyResourceDictionary(liveDictionary, parsedDictionary);
-            return "ok: resource dictionary updated";
+            return $"ok: {DescribeApplyResult(liveRoot)}";
         }
 
         return $"error: unsupported live root pair {liveRoot.GetType().FullName} <= {parsedRoot.GetType().FullName}";
+    }
+
+    private static bool TryApplyObject(object liveObject, object parsedObject)
+    {
+        if (liveObject is ResourceDictionary liveDictionary && parsedObject is ResourceDictionary parsedDictionary)
+        {
+            ApplyResourceDictionary(liveDictionary, parsedDictionary);
+            return true;
+        }
+
+        if (liveObject is Window liveWindow && parsedObject is Window parsedWindow)
+        {
+            ApplyWindow(liveWindow, parsedWindow);
+            return true;
+        }
+
+        if (liveObject is HeaderedContentControl liveHeaderedContentControl &&
+            parsedObject is HeaderedContentControl parsedHeaderedContentControl)
+        {
+            ApplyHeaderedContentControl(liveHeaderedContentControl, parsedHeaderedContentControl);
+            return true;
+        }
+
+        if (liveObject is ContentControl liveContentControl && parsedObject is ContentControl parsedContentControl)
+        {
+            ApplyContentControl(liveContentControl, parsedContentControl);
+            return true;
+        }
+
+        if (liveObject is Border liveBorder && parsedObject is Border parsedBorder)
+        {
+            ApplyBorder(liveBorder, parsedBorder);
+            return true;
+        }
+
+        if (liveObject is Decorator liveDecorator && parsedObject is Decorator parsedDecorator)
+        {
+            ApplyDecorator(liveDecorator, parsedDecorator);
+            return true;
+        }
+
+        if (liveObject is Panel livePanel && parsedObject is Panel parsedPanel)
+        {
+            ApplyPanel(livePanel, parsedPanel);
+            return true;
+        }
+
+        if (liveObject is TextBlock liveTextBlock && parsedObject is TextBlock parsedTextBlock)
+        {
+            ApplyTextBlock(liveTextBlock, parsedTextBlock);
+            return true;
+        }
+
+        if (liveObject is ItemsControl liveItemsControl && parsedObject is ItemsControl parsedItemsControl)
+        {
+            ApplyItemsControl(liveItemsControl, parsedItemsControl);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string DescribeApplyResult(object liveRoot)
+    {
+        return liveRoot switch
+        {
+            Window => "window updated",
+            HeaderedContentControl => "headered content control updated",
+            ContentControl => "content control updated",
+            Border => "border updated",
+            Decorator => "decorator updated",
+            Panel => "panel updated",
+            TextBlock => "text block updated",
+            ItemsControl => "items control updated",
+            ResourceDictionary => "resource dictionary updated",
+            _ => $"{liveRoot.GetType().Name} updated"
+        };
     }
 
     private static void ApplyWindow(Window liveWindow, Window parsedWindow)
@@ -158,23 +197,14 @@ public static class WpfHotReloadAgent
         liveWindow.SizeToContent = parsedWindow.SizeToContent;
         liveWindow.WindowStyle = parsedWindow.WindowStyle;
         liveWindow.ResizeMode = parsedWindow.ResizeMode;
-
-        if (parsedWindow.Content is object content)
-        {
-            parsedWindow.Content = null;
-            liveWindow.Content = content;
-        }
+        ApplyContentValue(liveWindow, parsedWindow.Content, content => liveWindow.Content = content);
     }
 
     private static void ApplyContentControl(ContentControl liveControl, ContentControl parsedControl)
     {
         ApplyFrameworkElement(liveControl, parsedControl);
         ApplyControl(liveControl, parsedControl);
-        if (parsedControl.Content is object content)
-        {
-            parsedControl.Content = null;
-            liveControl.Content = content;
-        }
+        ApplyContentValue(liveControl, parsedControl.Content, content => liveControl.Content = content);
     }
 
     private static void ApplyHeaderedContentControl(
@@ -184,32 +214,72 @@ public static class WpfHotReloadAgent
         ApplyFrameworkElement(liveControl, parsedControl);
         ApplyControl(liveControl, parsedControl);
         liveControl.Header = parsedControl.Header;
-        if (parsedControl.Content is object content)
-        {
-            parsedControl.Content = null;
-            liveControl.Content = content;
-        }
+        ApplyContentValue(liveControl, parsedControl.Content, content => liveControl.Content = content);
     }
 
     private static void ApplyPanel(Panel livePanel, Panel parsedPanel)
     {
         ApplyFrameworkElement(livePanel, parsedPanel);
-        var children = parsedPanel.Children.Cast<UIElement>().ToList();
-        parsedPanel.Children.Clear();
-        livePanel.Children.Clear();
-        foreach (var child in children)
+        var parsedChildren = parsedPanel.Children.Cast<UIElement>().ToList();
+        if (CanApplyChildrenInPlace(livePanel.Children.Cast<UIElement>().ToList(), parsedChildren))
         {
-            livePanel.Children.Add(child);
+            for (var i = 0; i < parsedChildren.Count; i++)
+            {
+                var liveChild = livePanel.Children[i];
+                var parsedChild = parsedChildren[i];
+                if (!TryApplyObject(liveChild, parsedChild))
+                {
+                    ReplacePanelChildren(livePanel, parsedPanel, parsedChildren);
+                    return;
+                }
+            }
+
+            return;
         }
+
+        ReplacePanelChildren(livePanel, parsedPanel, parsedChildren);
     }
 
     private static void ApplyDecorator(Decorator liveDecorator, Decorator parsedDecorator)
     {
         ApplyFrameworkElement(liveDecorator, parsedDecorator);
+        if (liveDecorator.Child is UIElement liveChild &&
+            parsedDecorator.Child is UIElement parsedChild &&
+            CanApplyChildInPlace(liveChild, parsedChild) &&
+            TryApplyObject(liveChild, parsedChild))
+        {
+            return;
+        }
+
         if (parsedDecorator.Child is UIElement child)
         {
             parsedDecorator.Child = null;
             liveDecorator.Child = child;
+        }
+    }
+
+    private static void ApplyBorder(Border liveBorder, Border parsedBorder)
+    {
+        ApplyFrameworkElement(liveBorder, parsedBorder);
+        liveBorder.Background = parsedBorder.Background;
+        liveBorder.BorderBrush = parsedBorder.BorderBrush;
+        liveBorder.BorderThickness = parsedBorder.BorderThickness;
+        liveBorder.Padding = parsedBorder.Padding;
+        liveBorder.CornerRadius = parsedBorder.CornerRadius;
+        liveBorder.SnapsToDevicePixels = parsedBorder.SnapsToDevicePixels;
+
+        if (liveBorder.Child is UIElement liveChild &&
+            parsedBorder.Child is UIElement parsedChild &&
+            CanApplyChildInPlace(liveChild, parsedChild) &&
+            TryApplyObject(liveChild, parsedChild))
+        {
+            return;
+        }
+
+        if (parsedBorder.Child is UIElement child)
+        {
+            parsedBorder.Child = null;
+            liveBorder.Child = child;
         }
     }
 
@@ -229,6 +299,30 @@ public static class WpfHotReloadAgent
         foreach (var item in items)
         {
             liveItemsControl.Items.Add(item);
+        }
+    }
+
+    private static void ApplyTextBlock(TextBlock liveTextBlock, TextBlock parsedTextBlock)
+    {
+        ApplyFrameworkElement(liveTextBlock, parsedTextBlock);
+        liveTextBlock.Background = parsedTextBlock.Background;
+        liveTextBlock.Foreground = parsedTextBlock.Foreground;
+        liveTextBlock.FontFamily = parsedTextBlock.FontFamily;
+        liveTextBlock.FontSize = parsedTextBlock.FontSize;
+        liveTextBlock.FontStretch = parsedTextBlock.FontStretch;
+        liveTextBlock.FontStyle = parsedTextBlock.FontStyle;
+        liveTextBlock.FontWeight = parsedTextBlock.FontWeight;
+        liveTextBlock.Padding = parsedTextBlock.Padding;
+        liveTextBlock.TextAlignment = parsedTextBlock.TextAlignment;
+        liveTextBlock.TextWrapping = parsedTextBlock.TextWrapping;
+        liveTextBlock.TextTrimming = parsedTextBlock.TextTrimming;
+        liveTextBlock.LineHeight = parsedTextBlock.LineHeight;
+        liveTextBlock.Text = parsedTextBlock.Text;
+        liveTextBlock.Inlines.Clear();
+        foreach (var inline in parsedTextBlock.Inlines.ToList())
+        {
+            parsedTextBlock.Inlines.Remove(inline);
+            liveTextBlock.Inlines.Add(inline);
         }
     }
 
@@ -282,6 +376,112 @@ public static class WpfHotReloadAgent
         liveControl.HorizontalContentAlignment = parsedControl.HorizontalContentAlignment;
         liveControl.VerticalContentAlignment = parsedControl.VerticalContentAlignment;
         liveControl.IsEnabled = parsedControl.IsEnabled;
+    }
+
+    private static void ApplyContentValue(DependencyObject liveOwner, object? parsedContent, Action<object?> assignContent)
+    {
+        if (liveOwner is ContentControl liveContentControl &&
+            liveContentControl.Content is object liveContent &&
+            parsedContent is object parsedContentObject &&
+            CanApplyContentInPlace(liveContent, parsedContentObject) &&
+            TryApplyObject(liveContent, parsedContentObject))
+        {
+            return;
+        }
+
+        if (parsedContent is DependencyObject parsedDependencyObject)
+        {
+            DetachFromParent(parsedDependencyObject);
+        }
+
+        assignContent(parsedContent);
+    }
+
+    private static bool CanApplyContentInPlace(object liveContent, object parsedContent)
+    {
+        if (liveContent.GetType() != parsedContent.GetType())
+        {
+            return false;
+        }
+
+        return NameMatches(liveContent, parsedContent);
+    }
+
+    private static bool CanApplyChildrenInPlace(IReadOnlyList<UIElement> liveChildren, IReadOnlyList<UIElement> parsedChildren)
+    {
+        if (liveChildren.Count != parsedChildren.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < liveChildren.Count; i++)
+        {
+            if (!CanApplyChildInPlace(liveChildren[i], parsedChildren[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool CanApplyChildInPlace(object liveChild, object parsedChild)
+    {
+        return liveChild.GetType() == parsedChild.GetType() && NameMatches(liveChild, parsedChild);
+    }
+
+    private static bool NameMatches(object liveObject, object parsedObject)
+    {
+        var liveName = GetElementName(liveObject);
+        var parsedName = GetElementName(parsedObject);
+        if (string.IsNullOrWhiteSpace(liveName) && string.IsNullOrWhiteSpace(parsedName))
+        {
+            return true;
+        }
+
+        return string.Equals(liveName, parsedName, StringComparison.Ordinal);
+    }
+
+    private static string? GetElementName(object value)
+    {
+        return value switch
+        {
+            FrameworkElement frameworkElement => frameworkElement.Name,
+            FrameworkContentElement frameworkContentElement => frameworkContentElement.Name,
+            _ => null
+        };
+    }
+
+    private static void ReplacePanelChildren(Panel livePanel, Panel parsedPanel, List<UIElement> parsedChildren)
+    {
+        parsedPanel.Children.Clear();
+        livePanel.Children.Clear();
+        foreach (var child in parsedChildren)
+        {
+            livePanel.Children.Add(child);
+        }
+    }
+
+    private static void DetachFromParent(DependencyObject dependencyObject)
+    {
+        switch (dependencyObject)
+        {
+            case UIElement element when VisualTreeHelper.GetParent(element) is Panel panel:
+                panel.Children.Remove(element);
+                break;
+            case FrameworkElement frameworkElement when frameworkElement.Parent is ContentControl contentControl:
+                if (ReferenceEquals(contentControl.Content, frameworkElement))
+                {
+                    contentControl.Content = null;
+                }
+                break;
+            case FrameworkElement frameworkElement when frameworkElement.Parent is Decorator decorator:
+                if (ReferenceEquals(decorator.Child, frameworkElement))
+                {
+                    decorator.Child = null;
+                }
+                break;
+        }
     }
 
     private static IEnumerable<object> EnumerateLiveCandidates()
