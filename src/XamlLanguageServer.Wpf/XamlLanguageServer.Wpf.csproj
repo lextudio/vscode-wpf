@@ -8,6 +8,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>wpf-xaml-ls</AssemblyName>
     <RootNamespace>XamlLanguageServer.Wpf</RootNamespace>
+    <!-- Pre-compile hot paths to native code at publish time to reduce cold-start
+         JIT latency (Idea 2 from COMPLETION.md). -->
+    <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
 
   <ItemGroup>

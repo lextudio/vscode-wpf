@@ -23,6 +23,37 @@ export interface RuntimePreviewFrame {
   readonly source: string;
 }
 
+export interface RuntimePreviewHit {
+  readonly typeName: string;
+  readonly elementName: string;
+  readonly boundsX: number;
+  readonly boundsY: number;
+  readonly boundsWidth: number;
+  readonly boundsHeight: number;
+  readonly rootWidth: number;
+  readonly rootHeight: number;
+}
+
+export interface RuntimePreviewProperties {
+  readonly typeName: string;
+  readonly elementName: string;
+  readonly text: string;
+  readonly background: string;
+  readonly foreground: string;
+  readonly width: string;
+  readonly height: string;
+  readonly actualWidth: string;
+  readonly actualHeight: string;
+  readonly margin: string;
+  readonly horizontalAlignment: string;
+  readonly verticalAlignment: string;
+  readonly isEnabled: string;
+  readonly visibility: string;
+  readonly canEditText: boolean;
+  readonly canEditBackground: boolean;
+  readonly canEditForeground: boolean;
+}
+
 let outputChannel: vscode.OutputChannel | undefined;
 let extensionPath: string | undefined;
 
@@ -285,15 +316,227 @@ export async function captureRuntimePreview(
 
   try {
     const parsed = JSON.parse(response.value) as Partial<RuntimePreviewFrame>;
-    if (!parsed.pngBase64 || typeof parsed.width !== 'number' || typeof parsed.height !== 'number') {
+    const width = toNumber(parsed.width);
+    const height = toNumber(parsed.height);
+    if (!parsed.pngBase64 || width === null || height === null) {
       return null;
     }
 
     return {
       pngBase64: parsed.pngBase64,
-      width: parsed.width,
-      height: parsed.height,
+      width,
+      height,
       source: typeof parsed.source === 'string' ? parsed.source : 'runtime-main-window',
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function hitTestRuntimePreview(
+  projectPath: string,
+  xamlPath: string | undefined,
+  xNorm: number,
+  yNorm: number
+): Promise<RuntimePreviewHit | null> {
+  const info = runtimeSessionsByProject.get(projectPath);
+  if (!info) {
+    getOutputChannel().appendLine(`[Runtime] Cannot hit-test preview: no running session for ${projectPath}`);
+    return null;
+  }
+
+  if (xamlPath) {
+    info.xamlPath = xamlPath;
+  }
+
+  if (!info.pipeReady) {
+    const startupReady = await probeRuntimePipeReady(info.pipeName);
+    if (!startupReady) {
+      getOutputChannel().appendLine(`[Runtime] Cannot hit-test preview: runtime pipe not ready (${info.pipeName}).`);
+      return null;
+    }
+    info.pipeReady = true;
+  }
+
+  const payload: Record<string, unknown> = {
+    kind: 'preview',
+    action: 'hitTest',
+    xNorm: xNorm.toString(),
+    yNorm: yNorm.toString(),
+  };
+
+  if (info.xamlPath) {
+    payload.filePath = info.xamlPath;
+  }
+
+  const response = await sendPipeRequest(info.pipeName, payload);
+  if (!response || response.result !== 'ok' || !response.value) {
+    getOutputChannel().appendLine('[Runtime] Preview hit-test failed: runtime returned no hit.');
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(response.value) as Partial<RuntimePreviewHit>;
+    const boundsX = toNumber(parsed.boundsX);
+    const boundsY = toNumber(parsed.boundsY);
+    const boundsWidth = toNumber(parsed.boundsWidth);
+    const boundsHeight = toNumber(parsed.boundsHeight);
+    const rootWidth = toNumber(parsed.rootWidth);
+    const rootHeight = toNumber(parsed.rootHeight);
+    if (!parsed.typeName || boundsX === null || boundsY === null) {
+      return null;
+    }
+
+    return {
+      typeName: parsed.typeName,
+      elementName: typeof parsed.elementName === 'string' ? parsed.elementName : '',
+      boundsX,
+      boundsY,
+      boundsWidth: boundsWidth ?? 0,
+      boundsHeight: boundsHeight ?? 0,
+      rootWidth: rootWidth ?? 0,
+      rootHeight: rootHeight ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function findRuntimePreviewElement(
+  projectPath: string,
+  xamlPath: string | undefined,
+  elementName: string,
+  typeName: string
+): Promise<RuntimePreviewHit | null> {
+  const info = runtimeSessionsByProject.get(projectPath);
+  if (!info) {
+    getOutputChannel().appendLine(`[Runtime] Cannot find preview element: no running session for ${projectPath}`);
+    return null;
+  }
+
+  if (xamlPath) {
+    info.xamlPath = xamlPath;
+  }
+
+  if (!info.pipeReady) {
+    const startupReady = await probeRuntimePipeReady(info.pipeName);
+    if (!startupReady) {
+      getOutputChannel().appendLine(`[Runtime] Cannot find preview element: runtime pipe not ready (${info.pipeName}).`);
+      return null;
+    }
+    info.pipeReady = true;
+  }
+
+  const query = `name=${encodeURIComponent(elementName || '')};type=${encodeURIComponent(typeName || '')}`;
+  const payload: Record<string, unknown> = {
+    kind: 'preview',
+    action: 'find',
+    query,
+  };
+
+  if (info.xamlPath) {
+    payload.filePath = info.xamlPath;
+  }
+
+  const response = await sendPipeRequest(info.pipeName, payload);
+  if (!response || response.result !== 'ok' || !response.value) {
+    getOutputChannel().appendLine('[Runtime] Preview find failed: runtime returned no match.');
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(response.value) as Partial<RuntimePreviewHit>;
+    const boundsX = toNumber(parsed.boundsX);
+    const boundsY = toNumber(parsed.boundsY);
+    const boundsWidth = toNumber(parsed.boundsWidth);
+    const boundsHeight = toNumber(parsed.boundsHeight);
+    const rootWidth = toNumber(parsed.rootWidth);
+    const rootHeight = toNumber(parsed.rootHeight);
+    if (!parsed.typeName || boundsX === null || boundsY === null) {
+      return null;
+    }
+
+    return {
+      typeName: parsed.typeName,
+      elementName: typeof parsed.elementName === 'string' ? parsed.elementName : '',
+      boundsX,
+      boundsY,
+      boundsWidth: boundsWidth ?? 0,
+      boundsHeight: boundsHeight ?? 0,
+      rootWidth: rootWidth ?? 0,
+      rootHeight: rootHeight ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function inspectRuntimePreviewElement(
+  projectPath: string,
+  xamlPath: string | undefined,
+  elementName: string,
+  typeName: string
+): Promise<RuntimePreviewProperties | null> {
+  const info = runtimeSessionsByProject.get(projectPath);
+  if (!info) {
+    getOutputChannel().appendLine(`[Runtime] Cannot inspect preview element: no running session for ${projectPath}`);
+    return null;
+  }
+
+  if (xamlPath) {
+    info.xamlPath = xamlPath;
+  }
+
+  if (!info.pipeReady) {
+    const startupReady = await probeRuntimePipeReady(info.pipeName);
+    if (!startupReady) {
+      getOutputChannel().appendLine(`[Runtime] Cannot inspect preview element: runtime pipe not ready (${info.pipeName}).`);
+      return null;
+    }
+    info.pipeReady = true;
+  }
+
+  const query = `name=${encodeURIComponent(elementName || '')};type=${encodeURIComponent(typeName || '')}`;
+  const payload: Record<string, unknown> = {
+    kind: 'preview',
+    action: 'inspect',
+    query,
+  };
+
+  if (info.xamlPath) {
+    payload.filePath = info.xamlPath;
+  }
+
+  const response = await sendPipeRequest(info.pipeName, payload);
+  if (!response || response.result !== 'ok' || !response.value) {
+    getOutputChannel().appendLine('[Runtime] Preview inspect failed: runtime returned no result.');
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(response.value) as Partial<RuntimePreviewProperties>;
+    if (!parsed.typeName) {
+      return null;
+    }
+
+    return {
+      typeName: parsed.typeName,
+      elementName: typeof parsed.elementName === 'string' ? parsed.elementName : '',
+      text: typeof parsed.text === 'string' ? parsed.text : '',
+      background: typeof parsed.background === 'string' ? parsed.background : '',
+      foreground: typeof parsed.foreground === 'string' ? parsed.foreground : '',
+      width: typeof parsed.width === 'string' ? parsed.width : '',
+      height: typeof parsed.height === 'string' ? parsed.height : '',
+      actualWidth: typeof parsed.actualWidth === 'string' ? parsed.actualWidth : '',
+      actualHeight: typeof parsed.actualHeight === 'string' ? parsed.actualHeight : '',
+      margin: typeof parsed.margin === 'string' ? parsed.margin : '',
+      horizontalAlignment: typeof parsed.horizontalAlignment === 'string' ? parsed.horizontalAlignment : '',
+      verticalAlignment: typeof parsed.verticalAlignment === 'string' ? parsed.verticalAlignment : '',
+      isEnabled: typeof parsed.isEnabled === 'string' ? parsed.isEnabled : '',
+      visibility: typeof parsed.visibility === 'string' ? parsed.visibility : '',
+      canEditText: toBoolean(parsed.canEditText),
+      canEditBackground: toBoolean(parsed.canEditBackground),
+      canEditForeground: toBoolean(parsed.canEditForeground),
     };
   } catch {
     return null;
@@ -453,6 +696,31 @@ function resolveRuntimeHelperTargetFramework(projectTfm: string): string {
 
   // Fallback to modern runtime path.
   return 'netcoreapp3.0';
+}
+
+function toNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function toBoolean(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    return value.toLowerCase() === 'true' || value === '1';
+  }
+
+  return false;
 }
 
 function isRuntimeHelperUpToDate(projectPath: string, helperDllPath: string): boolean {

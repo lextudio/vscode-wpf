@@ -123,15 +123,32 @@ public static class WpfHotReloadAgent
                         }
                         else
                         {
-                            var captureResult = app.Dispatcher.Invoke(() => CapturePreviewFrame(request.FilePath));
-                            if (captureResult.Result.StartsWith("ok", StringComparison.Ordinal))
+                            PreviewCaptureResult previewResult;
+                            if (string.Equals(request.Action, "hitTest", StringComparison.Ordinal))
                             {
-                                result = "ok";
-                                responseValue = captureResult.Value;
+                                previewResult = app.Dispatcher.Invoke(() => HitTestPreviewElement(request.FilePath, request.XNorm, request.YNorm));
+                            }
+                            else if (string.Equals(request.Action, "inspect", StringComparison.Ordinal))
+                            {
+                                previewResult = app.Dispatcher.Invoke(() => InspectPreviewElement(request.Query));
+                            }
+                            else if (string.Equals(request.Action, "find", StringComparison.Ordinal))
+                            {
+                                previewResult = app.Dispatcher.Invoke(() => FindPreviewElement(request.Query));
                             }
                             else
                             {
-                                result = captureResult.Result;
+                                previewResult = app.Dispatcher.Invoke(() => CapturePreviewFrame(request.FilePath));
+                            }
+
+                            if (previewResult.Result.StartsWith("ok", StringComparison.Ordinal))
+                            {
+                                result = "ok";
+                                responseValue = previewResult.Value;
+                            }
+                            else
+                            {
+                                result = previewResult.Result;
                             }
                         }
                     }
@@ -194,6 +211,8 @@ public static class WpfHotReloadAgent
         public string? FilePath { get; set; }
         public string? XamlText { get; set; }
         public string? Query { get; set; }
+        public string? XNorm { get; set; }
+        public string? YNorm { get; set; }
     }
 
     private sealed class PipeResponse
@@ -214,6 +233,39 @@ public static class WpfHotReloadAgent
     {
         public string Result { get; set; } = "error: unknown";
         public string? Value { get; set; }
+    }
+
+    private sealed class PreviewHit
+    {
+        public string TypeName { get; set; } = string.Empty;
+        public string ElementName { get; set; } = string.Empty;
+        public double BoundsX { get; set; }
+        public double BoundsY { get; set; }
+        public double BoundsWidth { get; set; }
+        public double BoundsHeight { get; set; }
+        public double RootWidth { get; set; }
+        public double RootHeight { get; set; }
+    }
+
+    private sealed class PreviewProperties
+    {
+        public string TypeName { get; set; } = string.Empty;
+        public string ElementName { get; set; } = string.Empty;
+        public string Text { get; set; } = string.Empty;
+        public string Background { get; set; } = string.Empty;
+        public string Foreground { get; set; } = string.Empty;
+        public string Width { get; set; } = string.Empty;
+        public string Height { get; set; } = string.Empty;
+        public string ActualWidth { get; set; } = string.Empty;
+        public string ActualHeight { get; set; } = string.Empty;
+        public string Margin { get; set; } = string.Empty;
+        public string HorizontalAlignment { get; set; } = string.Empty;
+        public string VerticalAlignment { get; set; } = string.Empty;
+        public string IsEnabled { get; set; } = string.Empty;
+        public string Visibility { get; set; } = string.Empty;
+        public string CanEditText { get; set; } = "False";
+        public string CanEditBackground { get; set; } = "False";
+        public string CanEditForeground { get; set; } = "False";
     }
 
     // ── Overlay toolbar ──────────────────────────────────────────────────
@@ -598,6 +650,49 @@ public static class WpfHotReloadAgent
 #endif
     }
 
+    private static string SerializePreviewHit(PreviewHit hit)
+    {
+#if NETFRAMEWORK
+        return ToJsonString(
+            "typeName", hit.TypeName,
+            "elementName", hit.ElementName,
+            "boundsX", hit.BoundsX.ToString(CultureInfo.InvariantCulture),
+            "boundsY", hit.BoundsY.ToString(CultureInfo.InvariantCulture),
+            "boundsWidth", hit.BoundsWidth.ToString(CultureInfo.InvariantCulture),
+            "boundsHeight", hit.BoundsHeight.ToString(CultureInfo.InvariantCulture),
+            "rootWidth", hit.RootWidth.ToString(CultureInfo.InvariantCulture),
+            "rootHeight", hit.RootHeight.ToString(CultureInfo.InvariantCulture));
+#else
+        return JsonSerializer.Serialize(hit, JsonOptions);
+#endif
+    }
+
+    private static string SerializePreviewProperties(PreviewProperties properties)
+    {
+#if NETFRAMEWORK
+        return ToJsonString(
+            "typeName", properties.TypeName,
+            "elementName", properties.ElementName,
+            "text", properties.Text,
+            "background", properties.Background,
+            "foreground", properties.Foreground,
+            "width", properties.Width,
+            "height", properties.Height,
+            "actualWidth", properties.ActualWidth,
+            "actualHeight", properties.ActualHeight,
+            "margin", properties.Margin,
+            "horizontalAlignment", properties.HorizontalAlignment,
+            "verticalAlignment", properties.VerticalAlignment,
+            "isEnabled", properties.IsEnabled,
+            "visibility", properties.Visibility,
+            "canEditText", properties.CanEditText,
+            "canEditBackground", properties.CanEditBackground,
+            "canEditForeground", properties.CanEditForeground);
+#else
+        return JsonSerializer.Serialize(properties, JsonOptions);
+#endif
+    }
+
 #if NETFRAMEWORK
     private static PipeRequest? ParsePipeRequest(string json)
     {
@@ -617,6 +712,8 @@ public static class WpfHotReloadAgent
                     case "filePath": request.FilePath = value; break;
                     case "xamlText": request.XamlText = value; break;
                     case "query": request.Query = value; break;
+                    case "xNorm": request.XNorm = value; break;
+                    case "yNorm": request.YNorm = value; break;
                 }
             }
             return request;
@@ -696,6 +793,344 @@ public static class WpfHotReloadAgent
         }
     }
 
+    private static PreviewCaptureResult HitTestPreviewElement(string? filePath, string? xNormText, string? yNormText)
+    {
+        try
+        {
+            var app = Application.Current;
+            var window = app?.MainWindow;
+            if (window is null)
+            {
+                return new PreviewCaptureResult { Result = "error: no active MainWindow" };
+            }
+
+            var root = window.Content as FrameworkElement;
+            if (root is null)
+            {
+                return new PreviewCaptureResult { Result = "error: preview root is unavailable" };
+            }
+
+            root.UpdateLayout();
+            var rootWidth = Math.Max(1, root.ActualWidth);
+            var rootHeight = Math.Max(1, root.ActualHeight);
+
+            if (!double.TryParse(xNormText, NumberStyles.Float, CultureInfo.InvariantCulture, out var xNorm) ||
+                !double.TryParse(yNormText, NumberStyles.Float, CultureInfo.InvariantCulture, out var yNorm))
+            {
+                return new PreviewCaptureResult { Result = "error: invalid hit-test coordinates" };
+            }
+
+            xNorm = Math.Max(0, Math.Min(1, xNorm));
+            yNorm = Math.Max(0, Math.Min(1, yNorm));
+
+            var point = new Point(xNorm * rootWidth, yNorm * rootHeight);
+            var hitInput = root.InputHitTest(point);
+            if (hitInput is null)
+            {
+                return new PreviewCaptureResult { Result = "error: no hit at point" };
+            }
+
+            var hitDependency = hitInput as DependencyObject;
+            if (hitDependency is null)
+            {
+                return new PreviewCaptureResult { Result = "error: hit target is not a dependency object" };
+            }
+
+            var targetElement = FindNearestFrameworkElement(hitDependency);
+            if (targetElement is null)
+            {
+                return new PreviewCaptureResult { Result = "error: no selectable framework element found" };
+            }
+
+            var bounds = GetBoundsInRoot(targetElement, root);
+            var hit = new PreviewHit
+            {
+                TypeName = targetElement.GetType().FullName ?? targetElement.GetType().Name,
+                ElementName = targetElement.Name ?? string.Empty,
+                BoundsX = bounds.X,
+                BoundsY = bounds.Y,
+                BoundsWidth = bounds.Width,
+                BoundsHeight = bounds.Height,
+                RootWidth = rootWidth,
+                RootHeight = rootHeight,
+            };
+
+            return new PreviewCaptureResult
+            {
+                Result = "ok",
+                Value = SerializePreviewHit(hit),
+            };
+        }
+        catch (Exception ex)
+        {
+            return new PreviewCaptureResult
+            {
+                Result = $"error: preview hit-test failed ({ex.GetType().Name}): {ex.Message}",
+            };
+        }
+    }
+
+    private static PreviewCaptureResult FindPreviewElement(string? query)
+    {
+        try
+        {
+            var app = Application.Current;
+            var window = app?.MainWindow;
+            if (window is null)
+            {
+                return new PreviewCaptureResult { Result = "error: no active MainWindow" };
+            }
+
+            var root = window.Content as FrameworkElement;
+            if (root is null)
+            {
+                return new PreviewCaptureResult { Result = "error: preview root is unavailable" };
+            }
+
+            root.UpdateLayout();
+            var rootWidth = Math.Max(1, root.ActualWidth);
+            var rootHeight = Math.Max(1, root.ActualHeight);
+
+            ParseFindQuery(query, out var requestedName, out var requestedType);
+            if (string.IsNullOrWhiteSpace(requestedName) && string.IsNullOrWhiteSpace(requestedType))
+            {
+                return new PreviewCaptureResult { Result = "error: invalid find query" };
+            }
+
+            var targetElement = ResolvePreviewTarget(root, requestedName, requestedType, out var resolveError);
+            if (targetElement is null)
+            {
+                return new PreviewCaptureResult { Result = resolveError ?? "error: no preview element matched query" };
+            }
+
+            var bounds = GetBoundsInRoot(targetElement, root);
+            var hit = new PreviewHit
+            {
+                TypeName = targetElement.GetType().FullName ?? targetElement.GetType().Name,
+                ElementName = targetElement.Name ?? string.Empty,
+                BoundsX = bounds.X,
+                BoundsY = bounds.Y,
+                BoundsWidth = bounds.Width,
+                BoundsHeight = bounds.Height,
+                RootWidth = rootWidth,
+                RootHeight = rootHeight,
+            };
+
+            return new PreviewCaptureResult
+            {
+                Result = "ok",
+                Value = SerializePreviewHit(hit),
+            };
+        }
+        catch (Exception ex)
+        {
+            return new PreviewCaptureResult
+            {
+                Result = $"error: preview find failed ({ex.GetType().Name}): {ex.Message}",
+            };
+        }
+    }
+
+    private static PreviewCaptureResult InspectPreviewElement(string? query)
+    {
+        try
+        {
+            var app = Application.Current;
+            var window = app?.MainWindow;
+            if (window is null)
+            {
+                return new PreviewCaptureResult { Result = "error: no active MainWindow" };
+            }
+
+            var root = window.Content as FrameworkElement;
+            if (root is null)
+            {
+                return new PreviewCaptureResult { Result = "error: preview root is unavailable" };
+            }
+
+            root.UpdateLayout();
+            ParseFindQuery(query, out var requestedName, out var requestedType);
+            if (string.IsNullOrWhiteSpace(requestedName) && string.IsNullOrWhiteSpace(requestedType))
+            {
+                return new PreviewCaptureResult { Result = "error: invalid inspect query" };
+            }
+
+            var targetElement = ResolvePreviewTarget(root, requestedName, requestedType, out var resolveError);
+            if (targetElement is null)
+            {
+                return new PreviewCaptureResult { Result = resolveError ?? "error: no preview element matched query" };
+            }
+
+            var properties = new PreviewProperties
+            {
+                TypeName = targetElement.GetType().FullName ?? targetElement.GetType().Name,
+                ElementName = targetElement.Name ?? string.Empty,
+                Text = DescribeElementText(targetElement),
+                Background = DescribeElementBackground(targetElement),
+                Foreground = DescribeElementForeground(targetElement),
+                Width = DescribeSizeValue(targetElement.Width),
+                Height = DescribeSizeValue(targetElement.Height),
+                ActualWidth = DescribeSizeValue(targetElement.ActualWidth),
+                ActualHeight = DescribeSizeValue(targetElement.ActualHeight),
+                Margin = DescribeThickness(targetElement.Margin),
+                HorizontalAlignment = targetElement.HorizontalAlignment.ToString(),
+                VerticalAlignment = targetElement.VerticalAlignment.ToString(),
+                IsEnabled = targetElement.IsEnabled ? "True" : "False",
+                Visibility = targetElement.Visibility.ToString(),
+                CanEditText = SupportsTextEdit(targetElement) ? "True" : "False",
+                CanEditBackground = SupportsBackgroundEdit(targetElement) ? "True" : "False",
+                CanEditForeground = SupportsForegroundEdit(targetElement) ? "True" : "False",
+            };
+
+            return new PreviewCaptureResult
+            {
+                Result = "ok",
+                Value = SerializePreviewProperties(properties),
+            };
+        }
+        catch (Exception ex)
+        {
+            return new PreviewCaptureResult
+            {
+                Result = $"error: preview inspect failed ({ex.GetType().Name}): {ex.Message}",
+            };
+        }
+    }
+
+    private static FrameworkElement? ResolvePreviewTarget(
+        FrameworkElement root,
+        string requestedName,
+        string requestedType,
+        out string? error)
+    {
+        error = null;
+        FrameworkElement? targetElement = null;
+        var candidates = EnumerateFrameworkElementCandidates(root).ToList();
+
+        if (!string.IsNullOrWhiteSpace(requestedName))
+        {
+            var namedMatches = candidates.Where(candidate =>
+                string.Equals(candidate.Name, requestedName, StringComparison.Ordinal)).ToList();
+            if (namedMatches.Count > 1)
+            {
+                error = "error: ambiguous preview element name match";
+                return null;
+            }
+
+            if (namedMatches.Count == 1)
+            {
+                targetElement = namedMatches[0];
+            }
+        }
+
+        if (targetElement is null && !string.IsNullOrWhiteSpace(requestedType))
+        {
+            var typedMatches = candidates.Where(candidate =>
+                string.Equals(candidate.GetType().Name, requestedType, StringComparison.Ordinal) ||
+                string.Equals(candidate.GetType().FullName, requestedType, StringComparison.Ordinal) ||
+                candidate.GetType().FullName?.EndsWith("." + requestedType, StringComparison.Ordinal) == true).ToList();
+            if (typedMatches.Count > 1)
+            {
+                error = "error: ambiguous preview element type match";
+                return null;
+            }
+
+            if (typedMatches.Count == 1)
+            {
+                targetElement = typedMatches[0];
+            }
+        }
+
+        if (targetElement is null)
+        {
+            error = "error: no preview element matched query";
+        }
+
+        return targetElement;
+    }
+
+    private static FrameworkElement? FindNearestFrameworkElement(DependencyObject start)
+    {
+        var current = start;
+        while (current is not null)
+        {
+            if (current is FrameworkElement frameworkElement)
+            {
+                return frameworkElement;
+            }
+
+            DependencyObject? visualParent = null;
+            if (current is Visual || current is Visual3D)
+            {
+                visualParent = VisualTreeHelper.GetParent(current);
+            }
+
+            current = visualParent ?? LogicalTreeHelper.GetParent(current) as DependencyObject;
+        }
+
+        return null;
+    }
+
+    private static Rect GetBoundsInRoot(FrameworkElement element, FrameworkElement root)
+    {
+        element.UpdateLayout();
+        var width = Math.Max(1, element.ActualWidth);
+        var height = Math.Max(1, element.ActualHeight);
+
+        try
+        {
+            var transform = element.TransformToAncestor(root);
+            var origin = transform.Transform(new Point(0, 0));
+            return new Rect(origin.X, origin.Y, width, height);
+        }
+        catch
+        {
+            return new Rect(0, 0, width, height);
+        }
+    }
+
+    private static IEnumerable<FrameworkElement> EnumerateFrameworkElementCandidates(FrameworkElement root)
+    {
+        yield return root;
+
+        foreach (var descendant in EnumerateDescendants(root).OfType<FrameworkElement>())
+        {
+            yield return descendant;
+        }
+    }
+
+    private static void ParseFindQuery(string? query, out string requestedName, out string requestedType)
+    {
+        requestedName = string.Empty;
+        requestedType = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return;
+        }
+
+        var entries = query.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+        foreach (var entry in entries)
+        {
+            var index = entry.IndexOf('=');
+            if (index <= 0 || index >= entry.Length - 1)
+            {
+                continue;
+            }
+
+            var key = entry.Substring(0, index).Trim();
+            var value = Uri.UnescapeDataString(entry.Substring(index + 1)).Trim();
+            if (string.Equals(key, "name", StringComparison.OrdinalIgnoreCase))
+            {
+                requestedName = value;
+            }
+            else if (string.Equals(key, "type", StringComparison.OrdinalIgnoreCase))
+            {
+                requestedType = value;
+            }
+        }
+    }
+
     private static string? DescribeBrushColor(Control? control)
     {
         return control?.Background switch
@@ -704,6 +1139,98 @@ public static class WpfHotReloadAgent
             null => null,
             var brush => brush.ToString(),
         };
+    }
+
+    private static string DescribeElementText(FrameworkElement element)
+    {
+        return element switch
+        {
+            TextBox textBox => textBox.Text ?? string.Empty,
+            TextBlock textBlock => textBlock.Text ?? string.Empty,
+            HeaderedContentControl headeredContentControl => headeredContentControl.Header?.ToString() ?? string.Empty,
+            ContentControl contentControl => contentControl.Content?.ToString() ?? string.Empty,
+            _ => string.Empty,
+        };
+    }
+
+    private static string DescribeElementBackground(FrameworkElement element)
+    {
+        if (element is Control control)
+        {
+            return DescribeBrush(control.Background);
+        }
+
+        if (element is Panel panel)
+        {
+            return DescribeBrush(panel.Background);
+        }
+
+        return string.Empty;
+    }
+
+    private static string DescribeElementForeground(FrameworkElement element)
+    {
+        if (element is Control control)
+        {
+            return DescribeBrush(control.Foreground);
+        }
+
+        if (element is TextBlock textBlock)
+        {
+            return DescribeBrush(textBlock.Foreground);
+        }
+
+        return string.Empty;
+    }
+
+    private static string DescribeBrush(Brush? brush)
+    {
+        return brush switch
+        {
+            SolidColorBrush solidColorBrush => solidColorBrush.Color.ToString(),
+            null => string.Empty,
+            _ => brush.ToString() ?? string.Empty,
+        };
+    }
+
+    private static string DescribeSizeValue(double value)
+    {
+        return double.IsNaN(value)
+            ? "Auto"
+            : value.ToString("0.##", CultureInfo.InvariantCulture);
+    }
+
+    private static string DescribeThickness(Thickness thickness)
+    {
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0:0.##},{1:0.##},{2:0.##},{3:0.##}",
+            thickness.Left,
+            thickness.Top,
+            thickness.Right,
+            thickness.Bottom);
+    }
+
+    private static bool SupportsTextEdit(FrameworkElement element)
+    {
+        return element is TextBox
+            || element is TextBlock
+            || element is HeaderedContentControl
+            || element is ContentControl;
+    }
+
+    private static bool SupportsBackgroundEdit(FrameworkElement element)
+    {
+        return element is Control
+            || element is Panel
+            || element is Border
+            || element is Window;
+    }
+
+    private static bool SupportsForegroundEdit(FrameworkElement element)
+    {
+        return element is Control
+            || element is TextBlock;
     }
 
     private static string? DescribeSelectorIndex(Selector? selector)

@@ -8,7 +8,12 @@ import {
   TransportKind,
 } from 'vscode-languageclient/node';
 import { ensureDotnetRuntime, getPreferredDotnetPath } from './dotnetBootstrap';
-import { PreviewProjectContext, requestPreviewProjectContext } from './languageServerProtocol';
+import {
+  HotReloadMapDocumentResult,
+  PreviewProjectContext,
+  requestHotReloadMapDocument,
+  requestPreviewProjectContext,
+} from './languageServerProtocol';
 
 let client: LanguageClient | undefined;
 let log: vscode.OutputChannel | undefined;
@@ -108,6 +113,14 @@ export function getLanguageServerClient(): LanguageClient | undefined {
 
 export async function getPreviewProjectContext(documentUri: vscode.Uri): Promise<PreviewProjectContext | null> {
   return requestPreviewProjectContext(client, documentUri);
+}
+
+export async function getHotReloadMapDocument(
+  documentUri: vscode.Uri,
+  elementName: string,
+  typeName: string
+): Promise<HotReloadMapDocumentResult | null> {
+  return requestHotReloadMapDocument(client, documentUri, elementName, typeName);
 }
 
 /**

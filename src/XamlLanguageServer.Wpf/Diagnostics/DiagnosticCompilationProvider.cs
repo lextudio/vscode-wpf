@@ -11,8 +11,14 @@ using XamlToCSharpGenerator.LanguageService.Workspace;
 namespace XamlLanguageServer.Wpf.Diagnostics;
 
 /// <summary>
-/// Wraps an ICompilationProvider to log diagnostic information to stderr.
-/// Stderr is safe to use — LSP communication goes over stdin/stdout.
+/// Wraps an <see cref="ICompilationProvider"/> to log diagnostic information to
+/// stderr.  Stderr is safe to use — LSP communication goes over stdin/stdout.
+///
+/// <para>
+/// The expensive per-assembly attribute scan (checking for
+/// <c>XmlnsDefinitionAttribute</c>) runs asynchronously after the snapshot is
+/// returned to the caller.  It never blocks completion or hover requests.
+/// </para>
 /// </summary>
 internal sealed class DiagnosticCompilationProvider : ICompilationProvider
 {
@@ -35,64 +41,20 @@ internal sealed class DiagnosticCompilationProvider : ICompilationProvider
         Log($"  Project={snapshot.Project?.Name ?? "(null)"}");
         Log($"  Compilation={(snapshot.Compilation is not null ? "loaded" : "NULL")}");
 
-        if (snapshot.Compilation is not null)
-        {
-            var compilation = snapshot.Compilation;
-            var referencedAssemblies = compilation.SourceModule.ReferencedAssemblySymbols;
-            Log($"  ReferencedAssemblies.Count={referencedAssemblies.Length}");
-
-            // Check for WPF framework assemblies
-            var wpfAssemblies = referencedAssemblies
-                .Where(a => a.Identity.Name.StartsWith("PresentationFramework", StringComparison.Ordinal) ||
-                            a.Identity.Name.StartsWith("PresentationCore", StringComparison.Ordinal) ||
-                            a.Identity.Name.StartsWith("WindowsBase", StringComparison.Ordinal))
-                .Select(a => a.Identity.Name)
-                .ToArray();
-            Log($"  WPF assemblies found: [{string.Join(", ", wpfAssemblies)}]");
-
-            // Check for XmlnsDefinitionAttribute in referenced assemblies
-            int xmlnsDefCount = 0;
-            int wpfXmlnsDefCount = 0;
-            foreach (var assembly in referencedAssemblies)
-            {
-                foreach (var attr in assembly.GetAttributes())
-                {
-                    var attrName = attr.AttributeClass?.ToDisplayString();
-                    if (attrName == "System.Windows.Markup.XmlnsDefinitionAttribute")
-                    {
-                        wpfXmlnsDefCount++;
-                        if (wpfXmlnsDefCount <= 5)
-                        {
-                            var xmlNs = attr.ConstructorArguments.Length > 0 ? attr.ConstructorArguments[0].Value?.ToString() : "?";
-                            var clrNs = attr.ConstructorArguments.Length > 1 ? attr.ConstructorArguments[1].Value?.ToString() : "?";
-                            Log($"    WPF XmlnsDef: {xmlNs} -> {clrNs}");
-                        }
-                    }
-                    else if (attrName == "Avalonia.Metadata.XmlnsDefinitionAttribute")
-                    {
-                        xmlnsDefCount++;
-                    }
-                }
-            }
-            Log($"  Avalonia XmlnsDefinitionAttribute count: {xmlnsDefCount}");
-            Log($"  WPF XmlnsDefinitionAttribute count: {wpfXmlnsDefCount}");
-
-            // Log source assembly types (what ends up in fallback)
-            var sourceTypes = compilation.Assembly.GlobalNamespace
-                .GetNamespaceMembers()
-                .SelectMany(ns => ns.GetTypeMembers())
-                .Where(t => t.DeclaredAccessibility == Accessibility.Public && !t.IsAbstract)
-                .Select(t => t.ToDisplayString())
-                .ToArray();
-            Log($"  Source assembly public types: [{string.Join(", ", sourceTypes)}]");
-        }
-
         if (!snapshot.Diagnostics.IsDefaultOrEmpty)
         {
             foreach (var diag in snapshot.Diagnostics)
             {
                 Log($"  Diagnostic [{diag.Code}] {diag.Severity}: {diag.Message}");
             }
+        }
+
+        // Fire the expensive per-assembly scan asynchronously so it never
+        // delays the caller.  This is diagnostic/development logging only.
+        if (snapshot.Compilation is not null)
+        {
+            var compilationForLog = snapshot.Compilation;
+            _ = Task.Run(() => LogCompilationDetails(compilationForLog));
         }
 
         return snapshot;
@@ -107,6 +69,72 @@ internal sealed class DiagnosticCompilationProvider : ICompilationProvider
     public void Dispose()
     {
         _inner.Dispose();
+    }
+
+    // -------------------------------------------------------------------------
+    // Async diagnostic logging — runs after the compilation is returned
+    // -------------------------------------------------------------------------
+
+    private static void LogCompilationDetails(Compilation compilation)
+    {
+        try
+        {
+            var referencedAssemblies = compilation.SourceModule.ReferencedAssemblySymbols;
+            Log($"[async scan] ReferencedAssemblies.Count={referencedAssemblies.Length}");
+
+            var wpfAssemblies = referencedAssemblies
+                .Where(a => a.Identity.Name.StartsWith("PresentationFramework", StringComparison.Ordinal) ||
+                            a.Identity.Name.StartsWith("PresentationCore", StringComparison.Ordinal) ||
+                            a.Identity.Name.StartsWith("WindowsBase", StringComparison.Ordinal))
+                .Select(a => a.Identity.Name)
+                .ToArray();
+            Log($"[async scan] WPF assemblies found: [{string.Join(", ", wpfAssemblies)}]");
+
+            // Walk every referenced assembly looking for XmlnsDefinitionAttribute.
+            // This triggers Roslyn metadata loading and can be slow — which is
+            // why it runs on a background thread.
+            int xmlnsDefCount = 0;
+            int wpfXmlnsDefCount = 0;
+
+            foreach (var assembly in referencedAssemblies)
+            {
+                foreach (var attr in assembly.GetAttributes())
+                {
+                    var attrName = attr.AttributeClass?.ToDisplayString();
+                    if (attrName == "System.Windows.Markup.XmlnsDefinitionAttribute")
+                    {
+                        wpfXmlnsDefCount++;
+                        if (wpfXmlnsDefCount <= 5)
+                        {
+                            var xmlNs = attr.ConstructorArguments.Length > 0
+                                ? attr.ConstructorArguments[0].Value?.ToString() : "?";
+                            var clrNs = attr.ConstructorArguments.Length > 1
+                                ? attr.ConstructorArguments[1].Value?.ToString() : "?";
+                            Log($"[async scan]   WPF XmlnsDef: {xmlNs} -> {clrNs}");
+                        }
+                    }
+                    else if (attrName == "Avalonia.Metadata.XmlnsDefinitionAttribute")
+                    {
+                        xmlnsDefCount++;
+                    }
+                }
+            }
+
+            Log($"[async scan] Avalonia XmlnsDefinitionAttribute count: {xmlnsDefCount}");
+            Log($"[async scan] WPF XmlnsDefinitionAttribute count: {wpfXmlnsDefCount}");
+
+            var sourceTypes = compilation.Assembly.GlobalNamespace
+                .GetNamespaceMembers()
+                .SelectMany(ns => ns.GetTypeMembers())
+                .Where(t => t.DeclaredAccessibility == Accessibility.Public && !t.IsAbstract)
+                .Select(t => t.ToDisplayString())
+                .ToArray();
+            Log($"[async scan] Source assembly public types: [{string.Join(", ", sourceTypes)}]");
+        }
+        catch (Exception ex)
+        {
+            Log($"[async scan] Failed: {ex.Message}");
+        }
     }
 
     private static void Log(string message)

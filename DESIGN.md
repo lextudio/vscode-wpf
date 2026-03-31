@@ -963,6 +963,163 @@ Commands:
 - `setProperty`
 - `serializeDocument`
 
+### Live Preview to Embedded Designer (Phased Plan)
+
+The current `WPF Live Preview` pane is the correct foundation for an embedded designer.  
+We should extend it incrementally, keeping the runtime-first architecture and avoiding a big-bang rewrite.
+
+#### Core principles
+
+- Keep **three side-by-side actions** independent: `Hot Reload`, `Live Preview`, `Launch Designer`.
+- Treat the preview pane as a **design client** over the existing runtime pipe protocol.
+- Keep AXSG/XSG as the source of truth for document mapping and safe edit classification.
+- Prefer **targeted XAML text edits** over direct in-memory runtime-only state changes.
+- Never require debugger attachment for core design interactions.
+
+#### Current implementation status (March 31, 2026)
+
+- D1 MVP is implemented:
+  - Runtime protocol supports `preview.hitTest` alongside `preview.capture`.
+  - Live Preview pane supports click hit-test, element metadata display, and overlay bounds highlight.
+- D2 initial bridge is implemented:
+  - Clicking a selected preview element now attempts source reveal in XAML.
+  - Mapping now tries `axsg/hotreload/mapDocument` first, then falls back to local heuristics (`x:Name`/`Name`, then element type tag).
+- AXSG map results are now confidence-gated in the extension; low-confidence mappings are rejected in favor of fallback matching with a status hint.
+- Cursor movement in XAML now attempts reverse sync into Live Preview using runtime `preview.find` (name/type heuristic query).
+- Reverse sync currently prefers named elements only and debounces cursor events to reduce noisy runtime traffic.
+- Reverse sync now enforces ambiguity guards (`Name` uniqueness check in source + runtime ambiguity rejection) and shows throttled status hints when sync is skipped.
+- D3 read path has started: selected elements now surface a read-only runtime property snapshot in Live Preview (`Text`, brushes, size, margin, alignment, enabled/visibility).
+- D3 write MVP is now available for a safe subset:
+  - Live Preview can apply `Text`, `Background`, and `Foreground` changes by editing source XAML attributes.
+  - Writes are ambiguity-safe (require unique element match) and keep XAML as source of truth.
+  - Brush edits are normalized/validated conservatively before writing.
+  - Per-control capability gating is enforced from runtime inspection (buttons disable for unsupported properties; extension revalidates on apply).
+  - Live Preview now includes optional `Auto Push Hot Reload` to push successful property edits to the running app immediately.
+- D4 MVP is now implemented:
+  - Live Preview pane accepts toolbox/snippet drops on the preview surface.
+  - Drop point is resolved via runtime `preview.hitTest`, then translated into source-of-truth XAML insertion edits.
+  - Container-aware placement rules are enforced for `Panel`, `ItemsControl`, and `ContentControl` families.
+  - Custom-control namespace injection and prefix resolution are reused during insertion.
+  - Optional `Auto Push Hot Reload` can push successful insertions immediately.
+- D2 remains intentionally conservative for ambiguous trees:
+  - `mapDocument`/fallback reveal is wired, but reverse sync prefers uniquely named elements to avoid incorrect jumps.
+
+#### Phase D1 — Interactive selection overlay (preview-only, read path)
+
+Goal: click in preview and identify the corresponding live element/XAML node.
+
+Runtime protocol additions:
+
+- `preview.capture` (existing) + metadata extension:
+  - image dimensions
+  - root id
+  - optional element bounds map
+- `preview.hitTest`
+  - input: preview pixel coordinates, root id
+  - output: element id, type, `x:Name`, bounds
+- `preview.enumerateRoots`
+  - output: current windows/pages eligible for capture
+
+VS Code pane additions:
+
+- Hover rectangle + click-to-select in the preview image
+- Selection chip showing type/name
+- Selection event published to extension host
+
+Success gate:
+
+- Clicking a visible control in preview reliably resolves a stable element identity.
+
+#### Phase D2 — XAML node mapping + reveal (bridge to editor)
+
+Goal: map selected runtime element back to XAML text location.
+
+Extension/AXSG additions:
+
+- `axsg/hotreload/mapDocument` used for runtime-element-to-XAML mapping
+- fallback heuristics using `x:Name`, type, and nearest ancestor
+
+Editor integration:
+
+- `Live Preview` selection reveals/highlights corresponding XAML range
+- active XAML cursor updates preview selection when mapping is unambiguous
+
+Success gate:
+
+- Bi-directional selection sync works for common controls/layout containers.
+
+#### Phase D3 — Property editing (write path, safe subset)
+
+Goal: edit common properties from preview and round-trip to XAML text.
+
+Runtime protocol additions:
+
+- `preview.inspectProperties` (safe editable subset + current values)
+- `preview.setProperty` (temporary runtime apply for immediate feedback)
+
+Extension behavior:
+
+- property panel in webview (Text, Background, Foreground, Margin, Width/Height, alignment subset)
+- writes persist by issuing **XAML text edits** in the editor document (not runtime-only mutation)
+- hot reload push remains the mechanism to apply persisted changes to runtime
+
+Safety rules:
+
+- do not write when mapping is ambiguous
+- do not overwrite unrelated attributes/order/comments
+- preserve formatting via existing formatter/refactoring services where possible
+
+Success gate:
+
+- Editing safe properties from preview updates both runtime and source XAML predictably.
+
+#### Phase D4 — Toolbox placement and drag semantics
+
+Goal: place new controls visually while preserving valid XAML structure.
+
+Protocol/engine additions:
+
+- `preview.getPlacementTargets` (valid drop containers at point)
+- `preview.insertElement` (returns canonical insertion intent, not final text)
+
+Extension behavior:
+
+- convert insertion intent to XAML text edits in document
+- reuse existing toolbox snippets + namespace injection
+- keep container-specific rules (Panel children, ContentControl content, ItemsControl items)
+
+Success gate:
+
+- Drag/place from toolbox into preview creates valid XAML in correct container.
+
+#### Phase D5 — Advanced designer behaviors (optional)
+
+- adorner handles for margin/size/alignment
+- multi-select
+- undo/redo synchronization between pane and editor
+- optional fallback to WpfDesigner serialization for complex object graphs
+
+#### Protocol versioning and compatibility
+
+- Add `protocolVersion` in request/response envelopes.
+- New commands must be additive and feature-probed (`query: capabilities`).
+- Preview pane should gracefully degrade to image-only mode when interactive commands are unavailable.
+
+#### Risks and mitigations
+
+- **Identity drift after hot reload**: use stable ids (`x:Name`, generated path signatures), refresh mappings after each apply.
+- **Round-trip formatting regressions**: route writes through text-edit layer + formatter, avoid raw full-document rewrites.
+- **Ambiguous mapping**: require confidence thresholds; block writes when uncertain.
+- **Performance**: throttle capture requests, coalesce interaction updates, cache last frame metadata.
+
+#### Recommended implementation order (embedded designer track)
+
+1. D1 interactive selection protocol and pane UX.
+2. D2 selection-to-XAML mapping + reveal.
+3. D3 safe property editor with source-of-truth text edits.
+4. D4 visual placement and insertion semantics.
+5. D5 advanced adorners and power-user behaviors.
+
 ### Runtime helper design (`WpfHotReload.Runtime`)
 
 The runtime helper is injected into the WPF app via `DOTNET_STARTUP_HOOKS` — no debugger needed.

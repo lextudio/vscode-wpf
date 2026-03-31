@@ -182,6 +182,11 @@
           "default": true,
           "description": "When a designer session is already running, push XAML editor changes into it automatically without rebuilding."
         },
+        "wpf.livePreviewAutoPush": {
+          "type": "boolean",
+          "default": false,
+          "description": "Default state for Auto Push Hot Reload in the Live Preview pane."
+        },
         "wpf.liveRuntimeOnEdit": {
           "type": "boolean",
           "default": false,

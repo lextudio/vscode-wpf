@@ -485,7 +485,7 @@ function getWebviewHtml(webview: vscode.Webview): string {
 </head>
 <body>
   <div id="app"></div>
-  <div class="hint">Drag a control into an open XAML editor tab.</div>
+  <div class="hint">Drag a control into an open XAML editor tab or the Live Preview pane.</div>
   <script nonce="${nonce}">
     const TOOLBOX_MIME = ${JSON.stringify(TOOLBOX_MIME)};
     const groups = ${escapedGroups};

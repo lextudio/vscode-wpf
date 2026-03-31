@@ -34,10 +34,10 @@ app's `Main()` runs — the same contract as `DOTNET_STARTUP_HOOKS`.
 
 ### 1. Multi-target `WpfHotReload.Runtime`
 
-Change the project from `net10.0-windows` to:
+Change the project from a single modern target to:
 
 ```xml
-<TargetFrameworks>net10.0-windows;net462</TargetFrameworks>
+<TargetFrameworks>netcoreapp3.0;net462</TargetFrameworks>
 ```
 
 ### 2. Replace `System.Text.Json`
@@ -94,7 +94,7 @@ applied — the same flow as the .NET Core test.
 ### C# Changes
 
 1. **Multi-targeting**: `WpfHotReload.Runtime.csproj` now targets both
-   `net10.0-windows` and `net462`.
+   `netcoreapp3.0` and `net462`.
 
 2. **System.Text.Json compatibility**: Replaced with manual JSON parsing for
    `net462` target using simple string manipulation. Added conditional compilation:
@@ -127,9 +127,9 @@ applied — the same flow as the .NET Core test.
    - Instead of `DOTNET_STARTUP_HOOKS` for Core projects
 
 3. **Multi-TFM helper builds**: `ensureRuntimeHelperBuilt()` now:
-   - Takes the target project as argument to detect its TFM
-   - Builds the appropriate TFM-specific helper (net462 or net10.0-windows)
-   - Outputs DLL with TFM suffix: `WpfHotReload.Runtime-{tfm}.dll`
+   - Resolves helper target framework from project TFM
+   - Uses `net462` for .NET Framework projects and `netcoreapp3.0` for .NET Core/.NET 5+ projects
+   - Builds and loads the corresponding `WpfHotReload.Runtime.dll` from `tools/WpfHotReload.Runtime/<tfm>/`
 
 ### Integration Tests
 
