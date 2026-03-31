@@ -3,7 +3,6 @@ out/
 bin/
 obj/
 .claude/
-.vscode/
 .vscode-test/
 .DS_Store
 dist/
