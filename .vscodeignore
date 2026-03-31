@@ -5,6 +5,9 @@ src/**
 .git/**
 sample/**
 tests/**
+test/**
+*.log
+sharpdbg-*.log
 external/**
 scripts/**
 *.ts

@@ -14,3 +14,5 @@ yarn-debug.log*
 yarn-error.log*
 coverage/
 tools/
+test/**/*.js
+test/**/*.js.map
