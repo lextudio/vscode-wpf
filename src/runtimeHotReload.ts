@@ -174,24 +174,24 @@ export async function pushRuntimeXamlUpdate(
   info.xamlPath = xamlPath;
 
   try {
-    await info.debugSession.customRequest('wpfHotReload/applyXamlText', {
-      helperAssemblyPath,
-      projectPath,
-      filePath: xamlPath,
-      xamlText,
-    });
-    getOutputChannel().appendLine(`[Runtime] Applied XAML update for ${xamlPath}`);
+    const result = await sendWpfHotReloadRequest(info.debugSession, helperAssemblyPath, xamlPath, xamlText);
+    if (!result.success) {
+      getOutputChannel().appendLine(`[Runtime] Hot reload rejected for ${xamlPath}: ${result.message}`);
+      vscode.window.showWarningMessage(`WPF hot reload failed: ${result.message}`);
+      return false;
+    }
+
+    getOutputChannel().appendLine(`[Runtime] Applied XAML update for ${xamlPath}: ${result.message}`);
     return true;
   } catch (err) {
     getOutputChannel().appendLine(
-      `[Runtime] Adapter does not yet handle wpfHotReload/applyXamlText for ${xamlPath}: ${String(err)}`
+      `[Runtime] Adapter does not yet handle WPF hot reload requests for ${xamlPath}: ${String(err)}`
     );
 
     if (!info.warnedUnsupportedApply) {
       info.warnedUnsupportedApply = true;
       void vscode.window.showInformationMessage(
-        'The app is running under SharpDbg, but the runtime-side XAML apply bridge is not implemented yet. ' +
-        'The extension is ready to route live edits once the adapter/runtime helper is added.'
+        'The app is running under SharpDbg, but the debug adapter did not accept the WPF hot reload request.'
       );
     }
 
@@ -278,14 +278,14 @@ async function ensureRuntimeHelperBuilt(): Promise<string | null> {
 
   const outputDir = path.join(extensionPath, 'tools', 'WpfHotReload.Runtime');
   const helperDll = path.join(outputDir, 'WpfHotReload.Runtime.dll');
-  if (fs.existsSync(helperDll)) {
-    return helperDll;
-  }
-
   const projectPath = path.join(extensionPath, 'src', 'WpfHotReload.Runtime', 'WpfHotReload.Runtime.csproj');
   if (!fs.existsSync(projectPath)) {
     vscode.window.showErrorMessage('WPF hot reload runtime helper project was not found.');
     return null;
+  }
+
+  if (isRuntimeHelperUpToDate(projectPath, helperDll)) {
+    return helperDll;
   }
 
   const dotnetPath = vscode.workspace.getConfiguration('wpf').get<string>('dotnetPath', 'dotnet');
@@ -309,6 +309,106 @@ async function ensureRuntimeHelperBuilt(): Promise<string | null> {
   return helperDll;
 }
 
+async function sendWpfHotReloadRequest(
+  debugSession: vscode.DebugSession,
+  helperAssemblyPath: string,
+  filePath: string,
+  xamlText: string
+): Promise<{ success: boolean; message: string }> {
+  try {
+    const response = await debugSession.customRequest('vsCustomMessage', {
+      message: {
+        sourceId: 'wpfHotReload',
+        messageCode: 1001,
+        parameter1: helperAssemblyPath,
+        parameter2: filePath,
+        xamlText,
+      },
+    });
+
+    const parsedVsResponse = parseVsCustomMessageResponse(response);
+    if (parsedVsResponse) {
+      return parsedVsResponse;
+    }
+  } catch (err) {
+    getOutputChannel().appendLine(`[Runtime] vsCustomMessage path failed, falling back: ${String(err)}`);
+  }
+
+  const fallbackResponse = await debugSession.customRequest('wpfHotReload/applyXamlText', {
+    helperAssemblyPath,
+    filePath,
+    xamlText,
+  });
+
+  return parseLegacyHotReloadResponse(fallbackResponse);
+}
+
+function parseVsCustomMessageResponse(response: unknown): { success: boolean; message: string } | null {
+  const container = asRecord(response);
+  const responseMessage = asRecord(container?.responseMessage) ?? asRecord(asRecord(container?.body)?.responseMessage);
+  if (!responseMessage) {
+    return null;
+  }
+
+  const success = typeof responseMessage.parameter1 === 'boolean' ? responseMessage.parameter1 : false;
+  const message =
+    typeof responseMessage.parameter2 === 'string'
+      ? responseMessage.parameter2
+      : success
+        ? 'ok'
+        : 'unknown response';
+
+  return { success, message };
+}
+
+function parseLegacyHotReloadResponse(response: unknown): { success: boolean; message: string } {
+  const body = asRecord(response);
+  const success = readBooleanField(body, 'success') ?? readBooleanField(asRecord(body?.body), 'success') ?? false;
+  const message = readStringField(body ?? {}, 'message')
+    ?? readStringField(asRecord(body?.body) ?? {}, 'message')
+    ?? (success ? 'ok' : 'unknown response');
+
+  return { success, message };
+}
+
+function isRuntimeHelperUpToDate(projectPath: string, helperDllPath: string): boolean {
+  if (!fs.existsSync(helperDllPath)) {
+    return false;
+  }
+
+  const helperMtime = fs.statSync(helperDllPath).mtimeMs;
+  const helperProjectDir = path.dirname(projectPath);
+  const pending: string[] = [helperProjectDir];
+  const watchedExtensions = new Set(['.cs', '.csproj', '.props', '.targets', '.resx']);
+
+  while (pending.length > 0) {
+    const currentDir = pending.pop();
+    if (!currentDir) {
+      continue;
+    }
+
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== 'bin' && entry.name !== 'obj') {
+          pending.push(fullPath);
+        }
+        continue;
+      }
+
+      if (!watchedExtensions.has(path.extname(entry.name).toLowerCase())) {
+        continue;
+      }
+
+      if (fs.statSync(fullPath).mtimeMs > helperMtime) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 function getProjectPathFromSession(session: vscode.DebugSession): string | undefined {
   return readStringField(session.configuration, 'projectPath');
 }
@@ -320,4 +420,17 @@ function getXamlPathFromSession(session: vscode.DebugSession): string | undefine
 function readStringField(source: Record<string, unknown>, key: string): string | undefined {
   const value = source[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function readBooleanField(source: Record<string, unknown> | undefined, key: string): boolean | undefined {
+  if (!source) {
+    return undefined;
+  }
+
+  const value = source[key];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined;
 }
