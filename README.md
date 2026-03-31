@@ -24,6 +24,7 @@ development experience for WPF with open source components
 - Use the Explorer side bar views:
   - `WPF Toolbox` to drag controls into XAML editors or onto the `WPF Live Preview` surface.
 - `WPF Live Preview` opens as an editor-side panel when the `Live Preview` action is clicked.
+- Use `WPF: Open XAML File` from Command Palette (or right-click a `.csproj` in Explorer) to open linked/non-discoverable XAML files.
 - In Live Preview:
   - Click an element to sync selection to source.
   - Edit `Text`, `Background`, or `Foreground` in the property section.

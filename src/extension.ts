@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import {
   areProjectOutputsUpToDate,
   findProjectForFile,
@@ -37,6 +38,7 @@ import {
   inspectRuntimePreviewElement,
   pushRuntimeXamlUpdate,
   registerRuntimeHotReload,
+  setRuntimePreviewHostVisibility,
   showRuntimeHotReloadOutput,
   startRuntimeHotReloadSession,
 } from './runtimeHotReload';
@@ -53,6 +55,7 @@ const livePreviewMappingHintDurationMs = 3500;
 const livePreviewHintCooldownMs = 1800;
 let lastLivePreviewHintAt = 0;
 let lastLivePreviewHintText = '';
+let lastLivePreviewXamlPath: string | undefined;
 
 interface LivePreviewToolboxItem {
   readonly kind: 'wpfToolboxItem';
@@ -72,21 +75,20 @@ export function activate(context: vscode.ExtensionContext): void {
   // Start the WPF XAML language server (no-op if binary not yet built).
   startLanguageServer(context);
   registerRuntimeHotReload(context);
-  registerToolbox(context);
+  const toolboxUi = registerToolbox(context);
 
   const resolveLivePreviewContext = async (): Promise<
     | { ok: true; projectPath: string; xamlPath: string }
     | { ok: false; message: string }
   > => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'xaml' || editor.document.uri.scheme !== 'file') {
+    const resource = resolveLivePreviewResource();
+    if (!resource) {
       return {
         ok: false,
-        message: 'Open a WPF XAML file in the editor to capture preview.',
+        message: 'Open a WPF XAML file in the editor once to initialize Live Preview context.',
       };
     }
 
-    const resource = editor.document.uri;
     const xamlPath = resource.fsPath;
     if (!isWpfXaml(xamlPath)) {
       return {
@@ -105,11 +107,29 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     if (!hasRunningRuntimeSession(projectPath)) {
-      return {
-        ok: false,
-        message: 'No running runtime session. Run "WPF: Hot Reload" first to start the app.',
-      };
+      const autoStartRuntime = vscode.workspace.getConfiguration('wpf').get<boolean>('livePreviewAutoStartRuntime', true);
+      if (!autoStartRuntime) {
+        return {
+          ok: false,
+          message: 'No running runtime session. Run "WPF: Hot Reload" first to start the app.',
+        };
+      }
+
+      const started = await startRuntimeHotReloadSession(context, projectPath, xamlPath, 'livePreview');
+      if (!started) {
+        return {
+          ok: false,
+          message: 'Failed to start runtime session for Live Preview. Check the "WPF Live Preview" output.',
+        };
+      }
     }
+
+    const hideHost = vscode.workspace.getConfiguration('wpf').get<boolean>('livePreviewHideRunningApp', true);
+    if (hideHost) {
+      await setRuntimePreviewHostVisibility(projectPath, true);
+    }
+
+    lastLivePreviewXamlPath = xamlPath;
 
     return {
       ok: true,
@@ -122,6 +142,7 @@ export function activate(context: vscode.ExtensionContext): void {
     async () => {
       const contextResult = await resolveLivePreviewContext();
       if (!contextResult.ok) {
+        toolboxUi.clearPropertyGrid(contextResult.message);
         return {
           ok: false as const,
           message: contextResult.message,
@@ -148,6 +169,42 @@ export function activate(context: vscode.ExtensionContext): void {
         },
       };
     },
+    async (xNorm, yNorm, navigateToSource) => {
+      const contextResult = await resolveLivePreviewContext();
+      if (!contextResult.ok) {
+        return {
+          ok: false as const,
+          message: contextResult.message,
+        };
+      }
+
+      const hit = await hitTestRuntimePreview(contextResult.projectPath, contextResult.xamlPath, xNorm, yNorm);
+      if (!hit) {
+        toolboxUi.clearPropertyGrid('No selectable element at this point.');
+        return {
+          ok: false as const,
+          message: 'No selectable element at this point.',
+        };
+      }
+
+      if (navigateToSource) {
+        await revealLivePreviewSelection(contextResult.xamlPath, hit.elementName, hit.typeName);
+      }
+
+      return {
+        ok: true as const,
+        hit: {
+          typeName: hit.typeName,
+          elementName: hit.elementName,
+          boundsX: hit.boundsX,
+          boundsY: hit.boundsY,
+          boundsWidth: hit.boundsWidth,
+          boundsHeight: hit.boundsHeight,
+          rootWidth: hit.rootWidth,
+          rootHeight: hit.rootHeight,
+        },
+      };
+    },
     async (xNorm, yNorm) => {
       const contextResult = await resolveLivePreviewContext();
       if (!contextResult.ok) {
@@ -164,8 +221,6 @@ export function activate(context: vscode.ExtensionContext): void {
           message: 'No selectable element at this point.',
         };
       }
-
-      await revealLivePreviewSelection(contextResult.xamlPath, hit.elementName, hit.typeName);
 
       return {
         ok: true as const,
@@ -184,6 +239,7 @@ export function activate(context: vscode.ExtensionContext): void {
     async (elementName, typeName) => {
       const contextResult = await resolveLivePreviewContext();
       if (!contextResult.ok) {
+        toolboxUi.clearPropertyGrid(contextResult.message);
         return {
           ok: false as const,
           message: contextResult.message,
@@ -233,11 +289,29 @@ export function activate(context: vscode.ExtensionContext): void {
         typeName
       );
       if (!properties) {
+        toolboxUi.clearPropertyGrid('No runtime properties available for this selection.');
         return {
           ok: false as const,
           message: 'No runtime properties available for this selection.',
         };
       }
+
+      toolboxUi.updatePropertyGrid({
+        typeName: properties.typeName,
+        elementName: properties.elementName,
+        text: properties.text,
+        background: properties.background,
+        foreground: properties.foreground,
+        width: properties.width,
+        height: properties.height,
+        actualWidth: properties.actualWidth,
+        actualHeight: properties.actualHeight,
+        margin: properties.margin,
+        horizontalAlignment: properties.horizontalAlignment,
+        verticalAlignment: properties.verticalAlignment,
+        isEnabled: properties.isEnabled,
+        visibility: properties.visibility,
+      });
 
       return {
         ok: true as const,
@@ -594,6 +668,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (hasRunningRuntimeSession(projectPath)) {
         showRuntimeHotReloadOutput();
+        const hideHost = vscode.workspace.getConfiguration('wpf').get<boolean>('livePreviewHideRunningApp', true);
+        if (hideHost) {
+          await setRuntimePreviewHostVisibility(projectPath, false);
+        }
         const xamlDocument = await vscode.workspace.openTextDocument(resource);
         const pushed = await pushRuntimeXamlUpdate(projectPath, xamlPath, xamlDocument.getText());
         if (pushed) {
@@ -617,6 +695,11 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      const hideHost = vscode.workspace.getConfiguration('wpf').get<boolean>('livePreviewHideRunningApp', true);
+      if (hideHost) {
+        await setRuntimePreviewHostVisibility(projectPath, false);
+      }
+
       vscode.window.showInformationMessage(
         `Started WPF hot reload session for ${path.basename(projectPath)}. Once the app finishes loading, click Hot Reload again to push the current XAML file.`
       );
@@ -637,6 +720,72 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.showInformationMessage(
           `WPF project set to: ${path.basename(picked)}`
         );
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf.openXamlFile', async (uri?: vscode.Uri) => {
+      const explicitProjectPath =
+        uri?.scheme === 'file' && uri.fsPath.toLowerCase().endsWith('.csproj')
+          ? uri.fsPath
+          : null;
+      const activePath = vscode.window.activeTextEditor?.document.uri.scheme === 'file'
+        ? vscode.window.activeTextEditor.document.uri.fsPath
+        : undefined;
+
+      let projectPath: string | null = explicitProjectPath;
+      if (!projectPath && activePath) {
+        projectPath = getCachedProject(activePath) ?? null;
+        if (!projectPath && activePath.toLowerCase().endsWith('.xaml')) {
+          projectPath = await findProjectForFile(activePath);
+        }
+      }
+
+      if (!projectPath) {
+        const knownProjects = Array.from(new Set(selectedProjects.values()));
+        if (knownProjects.length === 1) {
+          projectPath = knownProjects[0];
+        } else {
+          const projects = await findProjectsInWorkspace();
+          const picked = await showProjectPicker(projects);
+          projectPath = picked ?? null;
+        }
+      }
+
+      if (!projectPath) {
+        vscode.window.showWarningMessage('No WPF project selected.');
+        return;
+      }
+
+      const xamlFiles = collectProjectXamlFiles(projectPath);
+      if (xamlFiles.length === 0) {
+        vscode.window.showWarningMessage(`No XAML files found for ${path.basename(projectPath)}.`);
+        return;
+      }
+
+      const items = xamlFiles.map(file => ({
+        label: path.basename(file),
+        description: vscode.workspace.asRelativePath(file),
+        detail: file,
+      }));
+
+      const picked = await vscode.window.showQuickPick(items, {
+        placeHolder: `Open XAML file from ${path.basename(projectPath)}`,
+        matchOnDescription: true,
+        matchOnDetail: true,
+      });
+
+      if (!picked) {
+        return;
+      }
+
+      try {
+        const uri = vscode.Uri.file(picked.detail);
+        const document = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(document, { preview: false });
+      } catch (err) {
+        vscode.window.showErrorMessage(`Failed to open XAML file: ${String(err)}`);
       }
     })
   );
@@ -801,6 +950,34 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     )
   );
+}
+
+function resolveLivePreviewResource(): vscode.Uri | undefined {
+  const active = vscode.window.activeTextEditor;
+  if (
+    active &&
+    active.document.uri.scheme === 'file' &&
+    active.document.languageId === 'xaml' &&
+    isWpfXaml(active.document.uri.fsPath)
+  ) {
+    return active.document.uri;
+  }
+
+  for (const editor of vscode.window.visibleTextEditors) {
+    if (
+      editor.document.uri.scheme === 'file' &&
+      editor.document.languageId === 'xaml' &&
+      isWpfXaml(editor.document.uri.fsPath)
+    ) {
+      return editor.document.uri;
+    }
+  }
+
+  if (lastLivePreviewXamlPath && fs.existsSync(lastLivePreviewXamlPath) && isWpfXaml(lastLivePreviewXamlPath)) {
+    return vscode.Uri.file(lastLivePreviewXamlPath);
+  }
+
+  return undefined;
 }
 
 export async function deactivate(): Promise<void> {
@@ -1438,6 +1615,63 @@ function normalizeLivePreviewPropertyValue(
   }
 
   return { ok: true, value: trimmed };
+}
+
+function collectProjectXamlFiles(projectPath: string): string[] {
+  const projectDir = path.dirname(projectPath);
+  const collected = new Set<string>();
+
+  try {
+    const xml = fs.readFileSync(projectPath, 'utf8');
+    const includePattern = /<(?:Page|ApplicationDefinition|Resource|Content|None)\b[^>]*\b(?:Include|Update)\s*=\s*["']([^"']+\.xaml)["'][^>]*>/ig;
+    let match: RegExpExecArray | null;
+    while ((match = includePattern.exec(xml)) !== null) {
+      const relative = match[1];
+      if (!relative) {
+        continue;
+      }
+
+      const normalized = relative.replace(/[\\/]/g, path.sep);
+      const absolute = path.resolve(projectDir, normalized);
+      if (fs.existsSync(absolute)) {
+        collected.add(absolute);
+      }
+    }
+  } catch {
+    // fall back to disk scan only
+  }
+
+  const pending = [projectDir];
+  const ignored = new Set(['bin', 'obj', '.git', 'node_modules', '.vs']);
+  while (pending.length > 0) {
+    const dir = pending.pop();
+    if (!dir) {
+      continue;
+    }
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!ignored.has(entry.name)) {
+          pending.push(full);
+        }
+        continue;
+      }
+
+      if (entry.isFile() && entry.name.toLowerCase().endsWith('.xaml')) {
+        collected.add(full);
+      }
+    }
+  }
+
+  return Array.from(collected).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
 async function applyLivePreviewToolboxInsert(

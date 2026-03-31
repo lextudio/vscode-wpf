@@ -30,6 +30,9 @@ public static class WpfHotReloadAgent
     private static volatile bool _pipeListenerRunning;
     private static CancellationTokenSource? _pipeCts;
     private static HotReloadOverlay? _overlay;
+    private static bool _previewHostHiddenByAgent;
+    private static int _initialHideWorkerStarted;
+    private static readonly bool _startHiddenRequested = ReadBooleanEnvironmentVariable("WPF_HOTRELOAD_START_HIDDEN");
 
     public static string PipeName { get; } =
         Environment.GetEnvironmentVariable("WPF_HOTRELOAD_PIPE")
@@ -54,6 +57,7 @@ public static class WpfHotReloadAgent
     public static void EnsurePipeListenerStarted()
     {
         Log($"EnsurePipeListenerStarted called, already running={_pipeListenerRunning}");
+        EnsureStartHiddenWorker();
         if (_pipeListenerRunning)
         {
             return;
@@ -71,6 +75,116 @@ public static class WpfHotReloadAgent
         };
         thread.Start();
         _pipeListenerRunning = true;
+    }
+
+    private static bool ReadBooleanEnvironmentVariable(string name)
+    {
+        var value = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return string.Equals(value, "1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void EnsureStartHiddenWorker()
+    {
+        if (!_startHiddenRequested)
+        {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _initialHideWorkerStarted, 1) != 0)
+        {
+            return;
+        }
+
+        var worker = new Thread(HidePreviewHostOnStartupLoop)
+        {
+            IsBackground = true,
+            Name = "WpfHotReloadInitialHide",
+        };
+        worker.Start();
+    }
+
+    private static void HidePreviewHostOnStartupLoop()
+    {
+        var startedAt = Stopwatch.StartNew();
+        while (startedAt.Elapsed < TimeSpan.FromSeconds(12))
+        {
+            try
+            {
+                var app = Application.Current;
+                if (app is not null)
+                {
+                    var hidden = app.Dispatcher.Invoke(TryHidePreviewHostImmediately, DispatcherPriority.Send);
+                    if (hidden)
+                    {
+                        return;
+                    }
+                }
+            }
+            catch
+            {
+                // Keep retrying while app startup stabilizes.
+            }
+
+            Thread.Sleep(75);
+        }
+    }
+
+    private static bool TryHidePreviewHostImmediately()
+    {
+        if (!_startHiddenRequested)
+        {
+            return false;
+        }
+
+        var window = ResolvePreviewHostWindow();
+        if (window is null)
+        {
+            return false;
+        }
+
+        if (!window.IsLoaded)
+        {
+            window.Loaded -= OnPreviewHostLoadedHide;
+            window.Loaded += OnPreviewHostLoadedHide;
+            return false;
+        }
+
+        if (window.Visibility == Visibility.Visible)
+        {
+            window.Hide();
+        }
+
+        _previewHostHiddenByAgent = window.Visibility != Visibility.Visible;
+        return _previewHostHiddenByAgent;
+    }
+
+    private static void OnPreviewHostLoadedHide(object? sender, RoutedEventArgs args)
+    {
+        if (sender is not Window window)
+        {
+            return;
+        }
+
+        window.Loaded -= OnPreviewHostLoadedHide;
+        if (!_startHiddenRequested)
+        {
+            return;
+        }
+
+        if (window.Visibility == Visibility.Visible)
+        {
+            window.Hide();
+        }
+
+        _previewHostHiddenByAgent = window.Visibility != Visibility.Visible;
     }
 
     private static void PipeListenerLoop(string pipeName, CancellationToken ct)
@@ -127,6 +241,10 @@ public static class WpfHotReloadAgent
                             if (string.Equals(request.Action, "hitTest", StringComparison.Ordinal))
                             {
                                 previewResult = app.Dispatcher.Invoke(() => HitTestPreviewElement(request.FilePath, request.XNorm, request.YNorm));
+                            }
+                            else if (string.Equals(request.Action, "setHostVisibility", StringComparison.Ordinal))
+                            {
+                                previewResult = app.Dispatcher.Invoke(() => SetPreviewHostVisibility(request.Query));
                             }
                             else if (string.Equals(request.Action, "inspect", StringComparison.Ordinal))
                             {
@@ -741,11 +859,10 @@ public static class WpfHotReloadAgent
     {
         try
         {
-            var app = Application.Current;
-            var window = app?.MainWindow;
+            var window = ResolvePreviewWindow();
             if (window is null)
             {
-                return new PreviewCaptureResult { Result = "error: no active MainWindow" };
+                return new PreviewCaptureResult { Result = "error: no active preview window" };
             }
 
             window.UpdateLayout();
@@ -797,11 +914,10 @@ public static class WpfHotReloadAgent
     {
         try
         {
-            var app = Application.Current;
-            var window = app?.MainWindow;
+            var window = ResolvePreviewWindow();
             if (window is null)
             {
-                return new PreviewCaptureResult { Result = "error: no active MainWindow" };
+                return new PreviewCaptureResult { Result = "error: no active preview window" };
             }
 
             var root = window.Content as FrameworkElement;
@@ -824,19 +940,7 @@ public static class WpfHotReloadAgent
             yNorm = Math.Max(0, Math.Min(1, yNorm));
 
             var point = new Point(xNorm * rootWidth, yNorm * rootHeight);
-            var hitInput = root.InputHitTest(point);
-            if (hitInput is null)
-            {
-                return new PreviewCaptureResult { Result = "error: no hit at point" };
-            }
-
-            var hitDependency = hitInput as DependencyObject;
-            if (hitDependency is null)
-            {
-                return new PreviewCaptureResult { Result = "error: hit target is not a dependency object" };
-            }
-
-            var targetElement = FindNearestFrameworkElement(hitDependency);
+            var targetElement = ResolvePreviewHitTarget(root, point);
             if (targetElement is null)
             {
                 return new PreviewCaptureResult { Result = "error: no selectable framework element found" };
@@ -870,15 +974,105 @@ public static class WpfHotReloadAgent
         }
     }
 
+    private static FrameworkElement? ResolvePreviewHitTarget(FrameworkElement root, Point point)
+    {
+        // Primary path: use WPF input hit testing when available.
+        if (root.InputHitTest(point) is DependencyObject hitDependency)
+        {
+            var direct = FindNearestFrameworkElement(hitDependency);
+            var promoted = PromotePreviewHitElement(direct, root);
+            if (promoted is not null)
+            {
+                return promoted;
+            }
+        }
+
+        // Fallback path: hidden preview hosts can return null from InputHitTest.
+        // In that case, resolve by geometry using rendered bounds.
+        var bestMatch = EnumerateFrameworkElementCandidates(root)
+            .Select(element => new
+            {
+                Element = PromotePreviewHitElement(element, root),
+                Bounds = GetBoundsInRoot(element, root),
+                Depth = GetVisualDepth(element, root),
+            })
+            .Where(entry => entry.Element is not null
+                && entry.Bounds.Width > 0
+                && entry.Bounds.Height > 0
+                && entry.Bounds.Contains(point))
+            .OrderByDescending(entry => entry.Depth)
+            .ThenBy(entry => entry.Bounds.Width * entry.Bounds.Height)
+            .FirstOrDefault();
+
+        return bestMatch?.Element;
+    }
+
+    private static FrameworkElement? PromotePreviewHitElement(FrameworkElement? element, FrameworkElement root)
+    {
+        if (element is null)
+        {
+            return null;
+        }
+
+        var current = element as DependencyObject;
+        FrameworkElement? firstFrameworkElement = element;
+        while (current is not null)
+        {
+            if (current is FrameworkElement frameworkElement)
+            {
+                firstFrameworkElement ??= frameworkElement;
+                if (frameworkElement is Control)
+                {
+                    return frameworkElement;
+                }
+
+                if (ReferenceEquals(frameworkElement, root))
+                {
+                    break;
+                }
+            }
+
+            current = GetDependencyParent(current);
+        }
+
+        return firstFrameworkElement;
+    }
+
+    private static int GetVisualDepth(DependencyObject element, FrameworkElement root)
+    {
+        var depth = 0;
+        DependencyObject? current = element;
+        while (current is not null && !ReferenceEquals(current, root))
+        {
+            depth++;
+            current = GetDependencyParent(current);
+        }
+
+        return depth;
+    }
+
+    private static DependencyObject? GetDependencyParent(DependencyObject current)
+    {
+        if (current is Visual || current is Visual3D)
+        {
+            var visualParent = VisualTreeHelper.GetParent(current);
+            if (visualParent is not null)
+            {
+                return visualParent;
+            }
+        }
+
+        return LogicalTreeHelper.GetParent(current) as DependencyObject;
+    }
+
     private static PreviewCaptureResult FindPreviewElement(string? query)
     {
         try
         {
-            var app = Application.Current;
-            var window = app?.MainWindow;
+            var window = ResolvePreviewWindow();
             if (window is null)
             {
-                return new PreviewCaptureResult { Result = "error: no active MainWindow" };
+                return new PreviewCaptureResult { Result = "error: no active preview window" };
             }
 
             var root = window.Content as FrameworkElement;
@@ -935,11 +1129,10 @@ public static class WpfHotReloadAgent
     {
         try
         {
-            var app = Application.Current;
-            var window = app?.MainWindow;
+            var window = ResolvePreviewWindow();
             if (window is null)
             {
-                return new PreviewCaptureResult { Result = "error: no active MainWindow" };
+                return new PreviewCaptureResult { Result = "error: no active preview window" };
             }
 
             var root = window.Content as FrameworkElement;
@@ -995,6 +1188,117 @@ public static class WpfHotReloadAgent
                 Result = $"error: preview inspect failed ({ex.GetType().Name}): {ex.Message}",
             };
         }
+    }
+
+    private static PreviewCaptureResult SetPreviewHostVisibility(string? query)
+    {
+        var hide = string.Equals(query, "hidden", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(query, "hide", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(query, "1", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(query, "true", StringComparison.OrdinalIgnoreCase);
+        var show = string.Equals(query, "visible", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(query, "show", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(query, "0", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(query, "false", StringComparison.OrdinalIgnoreCase);
+
+        if (!hide && !show)
+        {
+            return new PreviewCaptureResult
+            {
+                Result = "error: invalid host visibility query",
+            };
+        }
+
+        var window = ResolvePreviewHostWindow();
+        if (window is null)
+        {
+            return new PreviewCaptureResult
+            {
+                Result = "error: no preview host window",
+            };
+        }
+
+        if (hide)
+        {
+            if (window.Visibility == Visibility.Visible)
+            {
+                window.Hide();
+                _previewHostHiddenByAgent = true;
+            }
+
+            return new PreviewCaptureResult
+            {
+                Result = "ok",
+                Value = "hidden",
+            };
+        }
+
+        if (_previewHostHiddenByAgent && window.Visibility != Visibility.Visible)
+        {
+            window.Show();
+        }
+
+        _previewHostHiddenByAgent = false;
+        return new PreviewCaptureResult
+        {
+            Result = "ok",
+            Value = "visible",
+        };
+    }
+
+    private static Window? ResolvePreviewWindow()
+    {
+        var app = Application.Current;
+        if (app is null)
+        {
+            return null;
+        }
+
+        if (app.MainWindow is Window mainWindow &&
+            mainWindow.IsLoaded &&
+            mainWindow.Visibility == Visibility.Visible)
+        {
+            return mainWindow;
+        }
+
+        var candidate = app.Windows
+            .OfType<Window>()
+            .FirstOrDefault(w => w.IsLoaded && w.IsActive && w.Visibility == Visibility.Visible);
+        if (candidate is not null)
+        {
+            return candidate;
+        }
+
+        candidate = app.Windows
+            .OfType<Window>()
+            .FirstOrDefault(w => w.IsLoaded && w.Visibility == Visibility.Visible);
+        if (candidate is not null)
+        {
+            return candidate;
+        }
+
+        return app.MainWindow
+            ?? app.Windows.OfType<Window>().FirstOrDefault();
+    }
+
+    private static Window? ResolvePreviewHostWindow()
+    {
+        var app = Application.Current;
+        if (app is null)
+        {
+            return null;
+        }
+
+        if (app.MainWindow is Window mainWindow && mainWindow.IsLoaded)
+        {
+            return mainWindow;
+        }
+
+        return app.Windows
+            .OfType<Window>()
+            .FirstOrDefault(window => window.IsLoaded)
+            ?? app.MainWindow
+            ?? app.Windows.OfType<Window>().FirstOrDefault();
     }
 
     private static FrameworkElement? ResolvePreviewTarget(

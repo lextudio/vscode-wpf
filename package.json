@@ -15,6 +15,7 @@
   ],
   "activationEvents": [
     "onView:wpf.toolbox",
+    "onView:wpf.propertyGrid",
     "onLanguage:xaml",
     "onCommand:wpf.openLivePreview"
   ],
@@ -80,6 +81,10 @@
         "title": "WPF: Select Project"
       },
       {
+        "command": "wpf.openXamlFile",
+        "title": "WPF: Open XAML File"
+      },
+      {
         "command": "wpf.buildDesignerTools",
         "title": "WPF: Build Designer Tools"
       },
@@ -126,6 +131,13 @@
           "group": "navigation@2"
         }
       ],
+      "explorer/context": [
+        {
+          "command": "wpf.openXamlFile",
+          "when": "resourceExtname == .csproj",
+          "group": "navigation"
+        }
+      ],
       "commandPalette": [
         {
           "command": "wpf.hotReload"
@@ -140,6 +152,9 @@
           "command": "wpf.selectProject"
         },
         {
+          "command": "wpf.openXamlFile"
+        },
+        {
           "command": "wpf.buildDesignerTools"
         },
         {
@@ -151,11 +166,25 @@
       ]
     },
     "views": {
-      "explorer": [
+      "wpf": [
         {
           "type": "webview",
           "id": "wpf.toolbox",
           "name": "WPF Toolbox"
+        },
+        {
+          "type": "webview",
+          "id": "wpf.propertyGrid",
+          "name": "WPF Property Grid"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "wpf",
+          "title": "WPF",
+          "icon": "images/preview.svg"
         }
       ]
     },
@@ -186,6 +215,16 @@
           "type": "boolean",
           "default": false,
           "description": "Default state for Auto Push Hot Reload in the Live Preview pane."
+        },
+        "wpf.livePreviewAutoStartRuntime": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start a runtime hot reload session when Live Preview is opened and no app session is running."
+        },
+        "wpf.livePreviewHideRunningApp": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hide the launched WPF app window while Live Preview is active so preview runs in the background. The extension restores the window when you run WPF: Hot Reload."
         },
         "wpf.liveRuntimeOnEdit": {
           "type": "boolean",

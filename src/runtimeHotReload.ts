@@ -55,9 +55,15 @@ export interface RuntimePreviewProperties {
 }
 
 let outputChannel: vscode.OutputChannel | undefined;
+let livePreviewOutputChannel: vscode.OutputChannel | undefined;
 let extensionPath: string | undefined;
 
 const runtimeSessionsByProject = new Map<string, RuntimeSessionInfo>();
+
+function toProjectSessionKey(projectPath: string): string {
+  const normalized = path.normalize(projectPath);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
 
 function getOutputChannel(): vscode.OutputChannel {
   if (!outputChannel) {
@@ -67,8 +73,20 @@ function getOutputChannel(): vscode.OutputChannel {
   return outputChannel;
 }
 
+function getLivePreviewOutputChannel(): vscode.OutputChannel {
+  if (!livePreviewOutputChannel) {
+    livePreviewOutputChannel = vscode.window.createOutputChannel('WPF Live Preview');
+  }
+
+  return livePreviewOutputChannel;
+}
+
 export function showRuntimeHotReloadOutput(): void {
   getOutputChannel().show(true);
+}
+
+export function showRuntimeLivePreviewOutput(): void {
+  getLivePreviewOutputChannel().show(true);
 }
 
 export function registerRuntimeHotReload(context: vscode.ExtensionContext): void {
@@ -86,25 +104,33 @@ export function registerRuntimeHotReload(context: vscode.ExtensionContext): void
       runtimeSessionsByProject.clear();
       outputChannel?.dispose();
       outputChannel = undefined;
+      livePreviewOutputChannel?.dispose();
+      livePreviewOutputChannel = undefined;
     },
   });
 }
 
 export function hasRunningRuntimeSession(projectPath: string): boolean {
-  return runtimeSessionsByProject.has(projectPath);
+  return runtimeSessionsByProject.has(toProjectSessionKey(projectPath));
 }
 
 export function getRuntimeSessionInfo(projectPath: string): RuntimeSessionInfo | undefined {
-  return runtimeSessionsByProject.get(projectPath);
+  return runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
 }
 
 export async function startRuntimeHotReloadSession(
   context: vscode.ExtensionContext,
   projectPath: string,
-  xamlPath?: string
+  xamlPath?: string,
+  logTarget: 'hotReload' | 'livePreview' = 'hotReload'
 ): Promise<boolean> {
-  if (hasRunningRuntimeSession(projectPath)) {
-    getOutputChannel().appendLine(`[Runtime] Reusing existing session for ${projectPath}`);
+  const sessionKey = toProjectSessionKey(projectPath);
+  const channel = logTarget === 'livePreview'
+    ? getLivePreviewOutputChannel()
+    : getOutputChannel();
+
+  if (runtimeSessionsByProject.has(sessionKey)) {
+    channel.appendLine(`[Runtime] Reusing existing session for ${projectPath}`);
     return true;
   }
 
@@ -134,7 +160,7 @@ export async function startRuntimeHotReloadSession(
 
   // Build the hot reload helper before launching so we can inject it
   // via DOTNET_STARTUP_HOOKS (Core) or AppDomainManager (Framework).
-  const helperAssemblyPath = await ensureRuntimeHelperBuilt(projectPath, helperTargetTfm);
+  const helperAssemblyPath = await ensureRuntimeHelperBuilt(projectPath, helperTargetTfm, channel);
 
   const launchTarget = getLaunchTarget(projectPath, dotnetPath);
   if (!launchTarget) {
@@ -147,6 +173,11 @@ export async function startRuntimeHotReloadSession(
   const pipeName = `wpf-hotreload-${crypto.randomUUID()}`;
   const env: Record<string, string | undefined> = { ...process.env };
   env['WPF_HOTRELOAD_PIPE'] = pipeName;
+  if (logTarget === 'livePreview') {
+    env['WPF_HOTRELOAD_START_HIDDEN'] = '1';
+  } else {
+    env['WPF_HOTRELOAD_START_HIDDEN'] = '0';
+  }
 
   if (helperAssemblyPath) {
     if (isFramework) {
@@ -157,23 +188,23 @@ export async function startRuntimeHotReloadSession(
       env['APPDOMAIN_MANAGER_ASM'] = asmName;
       env['APPDOMAIN_MANAGER_TYPE'] = 'WpfHotReload.Runtime.FrameworkStartupHook';
       env['DEVPATH'] = helperDir; // Ensure CLR can find the helper assembly
-      getOutputChannel().appendLine(`[Runtime] Injecting helper via AppDomainManager for Framework: ${helperAssemblyPath}`);
+      channel.appendLine(`[Runtime] Injecting helper via AppDomainManager for Framework: ${helperAssemblyPath}`);
     } else {
       // .NET Core/5+ uses DOTNET_STARTUP_HOOKS.
       env['DOTNET_STARTUP_HOOKS'] = helperAssemblyPath;
-      getOutputChannel().appendLine(`[Runtime] Injecting helper via DOTNET_STARTUP_HOOKS: ${helperAssemblyPath}`);
+      channel.appendLine(`[Runtime] Injecting helper via DOTNET_STARTUP_HOOKS: ${helperAssemblyPath}`);
     }
   } else {
-    getOutputChannel().appendLine('[Runtime] Runtime helper build failed; hot reload will not be available.');
+    channel.appendLine('[Runtime] Runtime helper build failed; hot reload will not be available.');
     return false;
   }
-  getOutputChannel().appendLine(`[Runtime] Pipe name: ${pipeName}`);
+  channel.appendLine(`[Runtime] Pipe name: ${pipeName}`);
 
   const program = launchTarget.program;
   const args = launchTarget.args;
   const cwd = launchTarget.cwd;
 
-  getOutputChannel().appendLine(`[Runtime] Launching ${program} ${args.join(' ')}`.trim());
+  channel.appendLine(`[Runtime] Launching ${program} ${args.join(' ')}`.trim());
 
   const child = cp.spawn(program, args, {
     cwd,
@@ -183,10 +214,10 @@ export async function startRuntimeHotReloadSession(
   });
 
   child.stdout?.on('data', (chunk: Buffer) => {
-    getOutputChannel().append(chunk.toString());
+    channel.append(chunk.toString());
   });
   child.stderr?.on('data', (chunk: Buffer) => {
-    getOutputChannel().append(chunk.toString());
+    channel.append(chunk.toString());
   });
 
   const info: RuntimeSessionInfo = {
@@ -198,18 +229,18 @@ export async function startRuntimeHotReloadSession(
     pipeReady: false,
   };
 
-  runtimeSessionsByProject.set(projectPath, info);
-  getOutputChannel().appendLine(`[Runtime] Started hot reload session for ${projectPath} (pid ${child.pid})`);
+  runtimeSessionsByProject.set(sessionKey, info);
+  channel.appendLine(`[Runtime] Started hot reload session for ${projectPath} (pid ${child.pid})`);
 
   child.on('exit', (code, signal) => {
-    runtimeSessionsByProject.delete(projectPath);
+    runtimeSessionsByProject.delete(sessionKey);
     const reason = signal ? `signal ${signal}` : `exit code ${code}`;
-    getOutputChannel().appendLine(`[Runtime] App exited (${reason}) for ${projectPath}`);
+    channel.appendLine(`[Runtime] App exited (${reason}) for ${projectPath}`);
   });
 
   child.on('error', (err) => {
-    runtimeSessionsByProject.delete(projectPath);
-    getOutputChannel().appendLine(`[Runtime] Failed to launch app: ${err.message}`);
+    runtimeSessionsByProject.delete(sessionKey);
+    channel.appendLine(`[Runtime] Failed to launch app: ${err.message}`);
     vscode.window.showErrorMessage(`Failed to launch WPF app: ${err.message}`);
   });
 
@@ -222,7 +253,7 @@ export async function pushRuntimeXamlUpdate(
   xamlText: string
 ): Promise<boolean> {
   getOutputChannel().appendLine(`[Runtime] Manual hot reload requested for ${xamlPath}`);
-  const info = runtimeSessionsByProject.get(projectPath);
+  const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
   if (!info) {
     getOutputChannel().appendLine(`[Runtime] No running session found for ${projectPath}`);
     return false;
@@ -280,9 +311,9 @@ export async function captureRuntimePreview(
   projectPath: string,
   xamlPath?: string
 ): Promise<RuntimePreviewFrame | null> {
-  const info = runtimeSessionsByProject.get(projectPath);
+  const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
   if (!info) {
-    getOutputChannel().appendLine(`[Runtime] Cannot capture preview: no running session for ${projectPath}`);
+    getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot capture preview: no running session for ${projectPath}`);
     return null;
   }
 
@@ -291,9 +322,9 @@ export async function captureRuntimePreview(
   }
 
   if (!info.pipeReady) {
-    const startupReady = await probeRuntimePipeReady(info.pipeName);
+    const startupReady = await probeRuntimePipeReadyWithBackoff(info.pipeName, 5, 120);
     if (!startupReady) {
-      getOutputChannel().appendLine(`[Runtime] Cannot capture preview: runtime pipe not ready (${info.pipeName}).`);
+      getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot capture preview: runtime pipe not ready (${info.pipeName}).`);
       return null;
     }
     info.pipeReady = true;
@@ -310,7 +341,8 @@ export async function captureRuntimePreview(
 
   const response = await sendPipeRequest(info.pipeName, payload);
   if (!response || response.result !== 'ok' || !response.value) {
-    getOutputChannel().appendLine('[Runtime] Preview capture failed: runtime returned no frame.');
+    const reason = response?.result ? ` (${response.result})` : '';
+    getLivePreviewOutputChannel().appendLine(`[Runtime] Preview capture failed: runtime returned no frame${reason}.`);
     return null;
   }
 
@@ -339,9 +371,9 @@ export async function hitTestRuntimePreview(
   xNorm: number,
   yNorm: number
 ): Promise<RuntimePreviewHit | null> {
-  const info = runtimeSessionsByProject.get(projectPath);
+  const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
   if (!info) {
-    getOutputChannel().appendLine(`[Runtime] Cannot hit-test preview: no running session for ${projectPath}`);
+    getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot hit-test preview: no running session for ${projectPath}`);
     return null;
   }
 
@@ -352,7 +384,7 @@ export async function hitTestRuntimePreview(
   if (!info.pipeReady) {
     const startupReady = await probeRuntimePipeReady(info.pipeName);
     if (!startupReady) {
-      getOutputChannel().appendLine(`[Runtime] Cannot hit-test preview: runtime pipe not ready (${info.pipeName}).`);
+      getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot hit-test preview: runtime pipe not ready (${info.pipeName}).`);
       return null;
     }
     info.pipeReady = true;
@@ -371,7 +403,8 @@ export async function hitTestRuntimePreview(
 
   const response = await sendPipeRequest(info.pipeName, payload);
   if (!response || response.result !== 'ok' || !response.value) {
-    getOutputChannel().appendLine('[Runtime] Preview hit-test failed: runtime returned no hit.');
+    const reason = response?.result ? ` (${response.result})` : '';
+    getLivePreviewOutputChannel().appendLine(`[Runtime] Preview hit-test failed: runtime returned no hit${reason}.`);
     return null;
   }
 
@@ -408,9 +441,9 @@ export async function findRuntimePreviewElement(
   elementName: string,
   typeName: string
 ): Promise<RuntimePreviewHit | null> {
-  const info = runtimeSessionsByProject.get(projectPath);
+  const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
   if (!info) {
-    getOutputChannel().appendLine(`[Runtime] Cannot find preview element: no running session for ${projectPath}`);
+    getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot find preview element: no running session for ${projectPath}`);
     return null;
   }
 
@@ -421,7 +454,7 @@ export async function findRuntimePreviewElement(
   if (!info.pipeReady) {
     const startupReady = await probeRuntimePipeReady(info.pipeName);
     if (!startupReady) {
-      getOutputChannel().appendLine(`[Runtime] Cannot find preview element: runtime pipe not ready (${info.pipeName}).`);
+      getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot find preview element: runtime pipe not ready (${info.pipeName}).`);
       return null;
     }
     info.pipeReady = true;
@@ -440,7 +473,8 @@ export async function findRuntimePreviewElement(
 
   const response = await sendPipeRequest(info.pipeName, payload);
   if (!response || response.result !== 'ok' || !response.value) {
-    getOutputChannel().appendLine('[Runtime] Preview find failed: runtime returned no match.');
+    const reason = response?.result ? ` (${response.result})` : '';
+    getLivePreviewOutputChannel().appendLine(`[Runtime] Preview find failed: runtime returned no match${reason}.`);
     return null;
   }
 
@@ -477,9 +511,9 @@ export async function inspectRuntimePreviewElement(
   elementName: string,
   typeName: string
 ): Promise<RuntimePreviewProperties | null> {
-  const info = runtimeSessionsByProject.get(projectPath);
+  const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
   if (!info) {
-    getOutputChannel().appendLine(`[Runtime] Cannot inspect preview element: no running session for ${projectPath}`);
+    getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot inspect preview element: no running session for ${projectPath}`);
     return null;
   }
 
@@ -490,7 +524,7 @@ export async function inspectRuntimePreviewElement(
   if (!info.pipeReady) {
     const startupReady = await probeRuntimePipeReady(info.pipeName);
     if (!startupReady) {
-      getOutputChannel().appendLine(`[Runtime] Cannot inspect preview element: runtime pipe not ready (${info.pipeName}).`);
+      getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot inspect preview element: runtime pipe not ready (${info.pipeName}).`);
       return null;
     }
     info.pipeReady = true;
@@ -509,7 +543,8 @@ export async function inspectRuntimePreviewElement(
 
   const response = await sendPipeRequest(info.pipeName, payload);
   if (!response || response.result !== 'ok' || !response.value) {
-    getOutputChannel().appendLine('[Runtime] Preview inspect failed: runtime returned no result.');
+    const reason = response?.result ? ` (${response.result})` : '';
+    getLivePreviewOutputChannel().appendLine(`[Runtime] Preview inspect failed: runtime returned no result${reason}.`);
     return null;
   }
 
@@ -541,6 +576,41 @@ export async function inspectRuntimePreviewElement(
   } catch {
     return null;
   }
+}
+
+export async function setRuntimePreviewHostVisibility(
+  projectPath: string,
+  hidden: boolean
+): Promise<boolean> {
+  const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
+  if (!info) {
+    getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot set preview host visibility: no running session for ${projectPath}`);
+    return false;
+  }
+
+  if (!info.pipeReady) {
+    const startupReady = await probeRuntimePipeReadyWithBackoff(info.pipeName, 4, 120);
+    if (!startupReady) {
+      getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot set preview host visibility: runtime pipe not ready (${info.pipeName}).`);
+      return false;
+    }
+    info.pipeReady = true;
+  }
+
+  const response = await sendPipeRequest(info.pipeName, {
+    kind: 'preview',
+    action: 'setHostVisibility',
+    query: hidden ? 'hidden' : 'visible',
+  });
+
+  if (!response || response.result !== 'ok') {
+    const reason = response?.result ? ` (${response.result})` : '';
+    getLivePreviewOutputChannel().appendLine(`[Runtime] Failed to set preview host visibility${reason}.`);
+    return false;
+  }
+
+  getLivePreviewOutputChannel().appendLine(`[Runtime] Preview host visibility set to ${hidden ? 'hidden' : 'visible'}.`);
+  return true;
 }
 
 function sendViaPipe(
@@ -594,6 +664,26 @@ async function probeRuntimePipeReady(pipeName: string): Promise<boolean> {
   return response?.result === 'ok' && response.value === '1';
 }
 
+async function probeRuntimePipeReadyWithBackoff(
+  pipeName: string,
+  attempts: number,
+  initialDelayMs: number
+): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const ready = await probeRuntimePipeReady(pipeName);
+    if (ready) {
+      return true;
+    }
+
+    if (attempt < attempts - 1) {
+      const delay = initialDelayMs * Math.pow(2, attempt);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  return false;
+}
+
 function sendPipeRequest(
   pipeName: string,
   payload: Record<string, unknown>
@@ -633,7 +723,11 @@ function sendPipeRequest(
   });
 }
 
-async function ensureRuntimeHelperBuilt(sampleProjectPath: string, targetTfm: string): Promise<string | null> {
+async function ensureRuntimeHelperBuilt(
+  sampleProjectPath: string,
+  targetTfm: string,
+  channel?: vscode.OutputChannel
+): Promise<string | null> {
   if (!extensionPath) {
     return null;
   }
@@ -650,8 +744,9 @@ async function ensureRuntimeHelperBuilt(sampleProjectPath: string, targetTfm: st
     return helperDll;
   }
 
+  const logger = channel ?? getOutputChannel();
   const dotnetPath = vscode.workspace.getConfiguration('wpf').get<string>('dotnetPath', 'dotnet');
-  getOutputChannel().appendLine(`[Runtime] Building WPF hot reload helper (${targetTfm}) from ${projPath}`);
+  logger.appendLine(`[Runtime] Building WPF hot reload helper (${targetTfm}) from ${projPath}`);
 
   const buildSucceeded = await new Promise<boolean>(resolve => {
     const args = [
@@ -666,8 +761,8 @@ async function ensureRuntimeHelperBuilt(sampleProjectPath: string, targetTfm: st
     ];
     const proc = cp.spawn(dotnetPath, args, { shell: true, cwd: extensionPath });
 
-    proc.stdout?.on('data', chunk => getOutputChannel().append(chunk.toString()));
-    proc.stderr?.on('data', chunk => getOutputChannel().append(chunk.toString()));
+    proc.stdout?.on('data', chunk => logger.append(chunk.toString()));
+    proc.stderr?.on('data', chunk => logger.append(chunk.toString()));
     proc.on('error', () => resolve(false));
     proc.on('close', code => resolve(code === 0));
   });

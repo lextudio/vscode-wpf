@@ -83,7 +83,7 @@ interface ApplyResultError {
 type PreviewResult = PreviewResultSuccess | PreviewResultError;
 type SnapshotProvider = () => Promise<PreviewResult>;
 type HitTestResult = HitTestResultSuccess | HitTestResultError;
-type HitTestProvider = (xNorm: number, yNorm: number) => Promise<HitTestResult>;
+type HitTestProvider = (xNorm: number, yNorm: number, navigateToSource: boolean) => Promise<HitTestResult>;
 type FindProvider = (elementName: string, typeName: string) => Promise<HitTestResult>;
 type InspectResult = InspectResultSuccess | InspectResultError;
 type InspectProvider = (elementName: string, typeName: string) => Promise<InspectResult>;
@@ -121,6 +121,7 @@ export class WpfLivePreviewPanel {
   constructor(
     private readonly provideSnapshot: SnapshotProvider,
     private readonly provideHitTest: HitTestProvider,
+    private readonly provideHoverHitTest: HitTestProvider,
     private readonly provideFind: FindProvider,
     private readonly provideInspect: InspectProvider,
     private readonly provideApply: ApplyProvider,
@@ -157,7 +158,12 @@ export class WpfLivePreviewPanel {
       }
 
       if (msg?.type === 'hitTest' && typeof msg.xNorm === 'number' && typeof msg.yNorm === 'number') {
-        void this.hitTest(msg.xNorm, msg.yNorm);
+        void this.hitTest(msg.xNorm, msg.yNorm, Boolean(msg.navigateToSource));
+        return;
+      }
+
+      if (msg?.type === 'hoverHitTest' && typeof msg.xNorm === 'number' && typeof msg.yNorm === 'number') {
+        void this.hoverHitTest(msg.xNorm, msg.yNorm);
         return;
       }
 
@@ -256,18 +262,36 @@ export class WpfLivePreviewPanel {
     }
   }
 
-  private async hitTest(xNorm: number, yNorm: number): Promise<void> {
+  private async hitTest(xNorm: number, yNorm: number, navigateToSource: boolean): Promise<void> {
     if (!this.panel) {
       return;
     }
 
-    const result = await this.provideHitTest(xNorm, yNorm);
+    const result = await this.provideHitTest(xNorm, yNorm, navigateToSource);
     if (result.ok) {
       await this.postSelection(result.hit);
     } else {
       this.panel.webview.postMessage({
         type: 'hitTestError',
         message: result.message,
+      });
+    }
+  }
+
+  private async hoverHitTest(xNorm: number, yNorm: number): Promise<void> {
+    if (!this.panel) {
+      return;
+    }
+
+    const result = await this.provideHoverHitTest(xNorm, yNorm, false);
+    if (result.ok) {
+      this.panel.webview.postMessage({
+        type: 'hoverResult',
+        hit: result.hit,
+      });
+    } else {
+      this.panel.webview.postMessage({
+        type: 'hoverClear',
       });
     }
   }
@@ -344,80 +368,129 @@ export class WpfLivePreviewPanel {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root { color-scheme: light dark; }
+    html, body {
+      height: 100%;
+    }
     body {
       margin: 0;
-      padding: 8px;
+      padding: 0;
       font-family: var(--vscode-font-family);
       color: var(--vscode-foreground);
-      background: var(--vscode-sideBar-background);
+      background: var(--vscode-editor-background);
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .toolbar,
+    .card,
+    .editors,
+    .hint {
+      display: none !important;
     }
     .toolbar {
       display: flex;
+      justify-content: space-between;
+      align-items: center;
       gap: 8px;
       margin-bottom: 8px;
-      align-items: center;
     }
     button {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
       border: none;
-      border-radius: 4px;
-      padding: 4px 10px;
+      border-radius: 6px;
+      padding: 5px 10px;
       cursor: pointer;
       font-size: 12px;
     }
     button:hover { background: var(--vscode-button-hoverBackground); }
-    .meta {
+    .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
       color: var(--vscode-descriptionForeground);
       font-size: 11px;
-      line-height: 1.4;
+    }
+    .card {
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background));
+      padding: 8px;
       margin-bottom: 8px;
-      white-space: pre-wrap;
-      word-break: break-all;
+    }
+    .card h3 {
+      margin: 0 0 6px 0;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      text-transform: uppercase;
+      color: var(--vscode-descriptionForeground);
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      line-height: 1.3;
+    }
+    .chip {
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 85%, var(--vscode-sideBar-background));
     }
     .panel {
       position: relative;
-      border: 1px solid var(--vscode-editorWidget-border);
-      border-radius: 6px;
+      border: 0;
+      border-radius: 0;
       background: var(--vscode-editor-background);
-      min-height: 120px;
-      overflow: hidden;
+      min-height: 0;
+      flex: 1 1 auto;
+      overflow: auto;
+      margin: 0;
     }
     .state {
-      padding: 10px;
+      padding: 14px;
       color: var(--vscode-descriptionForeground);
       font-size: 12px;
     }
     img {
       display: block;
-      width: 100%;
+      width: auto;
       height: auto;
+      max-width: none;
       image-rendering: auto;
       background: var(--vscode-editor-background);
-      cursor: crosshair;
+      cursor: default;
     }
     .selection {
-      margin: 8px 0;
-      color: var(--vscode-descriptionForeground);
       font-size: 11px;
       line-height: 1.4;
-      white-space: pre-wrap;
-      word-break: break-all;
+      color: var(--vscode-descriptionForeground);
     }
     .properties {
-      margin: 8px 0;
-      color: var(--vscode-descriptionForeground);
       font-size: 11px;
-      line-height: 1.45;
-      white-space: pre-wrap;
+      line-height: 1.4;
+      color: var(--vscode-descriptionForeground);
       word-break: break-word;
-      border: 1px solid var(--vscode-editorWidget-border);
-      border-radius: 6px;
-      padding: 6px 8px;
-      background: var(--vscode-editor-background);
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 4px 8px;
+    }
+    .k {
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.9;
+    }
+    .v {
+      color: var(--vscode-foreground);
+      min-width: 0;
     }
     .editors {
-      margin-top: 6px;
+      margin-top: 0;
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 6px;
@@ -430,7 +503,7 @@ export class WpfLivePreviewPanel {
       background: var(--vscode-input-background);
       color: var(--vscode-input-foreground);
       padding: 4px 6px;
-      border-radius: 4px;
+      border-radius: 6px;
       font-size: 11px;
     }
     .editors button:disabled {
@@ -438,18 +511,10 @@ export class WpfLivePreviewPanel {
       cursor: default;
     }
     .hint {
-      margin-top: 6px;
+      margin-top: 8px;
       color: var(--vscode-descriptionForeground);
       font-size: 11px;
       min-height: 16px;
-    }
-    .options {
-      margin-top: 6px;
-      color: var(--vscode-descriptionForeground);
-      font-size: 11px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
     }
     .hit-overlay {
       position: absolute;
@@ -457,6 +522,34 @@ export class WpfLivePreviewPanel {
       background: color-mix(in srgb, var(--vscode-focusBorder) 18%, transparent);
       pointer-events: none;
       display: none;
+      box-sizing: border-box;
+    }
+    .hover-overlay {
+      position: absolute;
+      border: 1px dashed var(--vscode-textLink-foreground);
+      background: color-mix(in srgb, var(--vscode-textLink-foreground) 12%, transparent);
+      pointer-events: none;
+      display: none;
+      box-sizing: border-box;
+    }
+    .hover-label {
+      position: absolute;
+      left: 0;
+      top: 0;
+      transform: translate(6px, 6px);
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-sideBar-background));
+      color: var(--vscode-foreground);
+      font-size: 11px;
+      line-height: 1.2;
+      padding: 3px 6px;
+      pointer-events: none;
+      display: none;
+      max-width: calc(100% - 16px);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
       box-sizing: border-box;
     }
     .drop-overlay {
@@ -480,10 +573,21 @@ export class WpfLivePreviewPanel {
 <body>
   <div class="toolbar">
     <button id="refresh">Refresh</button>
+    <div class="toolbar-right">
+      <label>
+        <input id="autoPush" type="checkbox" />
+        Auto Push
+      </label>
+      <label>
+        <input id="lockSelection" type="checkbox" />
+        Lock Selection
+      </label>
+    </div>
   </div>
-  <div class="meta" id="meta">No preview yet.</div>
-  <div class="selection" id="selection">Selection: none</div>
-  <div class="properties" id="properties">Properties: none</div>
+  <div class="card">
+    <h3>Session</h3>
+    <div class="meta" id="meta"></div>
+  </div>
   <div class="editors">
     <input id="textValue" type="text" placeholder="Text/Content value" />
     <button id="applyText">Apply Text</button>
@@ -492,16 +596,22 @@ export class WpfLivePreviewPanel {
     <input id="foregroundValue" type="text" placeholder="Foreground brush, e.g. White" />
     <button id="applyForeground">Apply Foreground</button>
   </div>
-  <label class="options">
-    <input id="autoPush" type="checkbox" />
-    <span>Auto Push Hot Reload</span>
-  </label>
   <div class="hint" id="applyHint"></div>
   <div class="panel" id="panel">
     <div class="state" id="state">Waiting for runtime snapshot…</div>
     <img id="preview" alt="Live WPF preview" style="display:none;" />
     <div class="hit-overlay" id="hitOverlay"></div>
+    <div class="hover-overlay" id="hoverOverlay"></div>
+    <div class="hover-label" id="hoverLabel"></div>
     <div class="drop-overlay" id="dropOverlay">Drop toolbox item to insert into XAML</div>
+  </div>
+  <div class="card">
+    <h3>Selection</h3>
+    <div class="selection" id="selection"></div>
+  </div>
+  <div class="card">
+    <h3>Properties</h3>
+    <div class="properties" id="properties"></div>
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -517,16 +627,24 @@ export class WpfLivePreviewPanel {
     const applyBackground = document.getElementById('applyBackground');
     const applyForeground = document.getElementById('applyForeground');
     const autoPush = document.getElementById('autoPush');
+    const lockSelection = document.getElementById('lockSelection');
     const applyHint = document.getElementById('applyHint');
     const state = document.getElementById('state');
     const preview = document.getElementById('preview');
     const panel = document.getElementById('panel');
     const hitOverlay = document.getElementById('hitOverlay');
+    const hoverOverlay = document.getElementById('hoverOverlay');
+    const hoverLabel = document.getElementById('hoverLabel');
     const dropOverlay = document.getElementById('dropOverlay');
     let rootWidth = 0;
     let rootHeight = 0;
+    let zoom = 1;
     let currentSelection = null;
+    let currentSelectionHit = null;
     let dragDepth = 0;
+    let hoverTimer = null;
+    let selectionLocked = false;
+    let currentHoverHit = null;
     let currentCapabilities = {
       canEditText: false,
       canEditBackground: false,
@@ -539,12 +657,57 @@ export class WpfLivePreviewPanel {
       autoPush.checked = ${defaultAutoPush ? 'true' : 'false'};
     }
 
+    function applyPreviewScale() {
+      if (rootWidth > 0 && rootHeight > 0) {
+        const scaledWidth = Math.max(1, Math.round(rootWidth * zoom));
+        const scaledHeight = Math.max(1, Math.round(rootHeight * zoom));
+        preview.style.width = scaledWidth + 'px';
+        preview.style.height = scaledHeight + 'px';
+      }
+    }
+
+    function esc(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function chip(label, value) {
+      return '<span class="chip"><strong>' + esc(label) + ':</strong> ' + esc(value) + '</span>';
+    }
+
+    function row(label, value) {
+      return '<div class="k">' + esc(label) + '</div><div class="v">' + esc(value) + '</div>';
+    }
+
+    function setDefaultCards() {
+      meta.innerHTML = chip('Status', 'Waiting');
+      selection.innerHTML = '<div class="kv">' + row('Element', 'None selected') + '</div>';
+      properties.innerHTML = '<div class="kv">' + row('Info', 'Select an element in preview') + '</div>';
+    }
+
+    setDefaultCards();
+
     refresh.addEventListener('click', () => {
       vscode.postMessage({ type: 'refresh' });
     });
 
     autoPush.addEventListener('change', () => {
       vscode.setState({ autoPush: !!autoPush.checked });
+    });
+
+    lockSelection.addEventListener('change', () => {
+      selectionLocked = !!lockSelection.checked;
+      if (selectionLocked) {
+        hoverOverlay.style.display = 'none';
+        hoverLabel.style.display = 'none';
+        if (preview.style.display !== 'none') {
+          preview.style.cursor = 'default';
+        }
+      }
     });
 
     preview.addEventListener('click', event => {
@@ -555,8 +718,119 @@ export class WpfLivePreviewPanel {
 
       const xNorm = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
       const yNorm = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
-      vscode.postMessage({ type: 'hitTest', xNorm, yNorm });
+      vscode.postMessage({ type: 'hitTest', xNorm, yNorm, navigateToSource: false });
     });
+
+    preview.addEventListener('dblclick', event => {
+      const rect = preview.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return;
+      }
+
+      const xNorm = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+      const yNorm = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+      vscode.postMessage({ type: 'hitTest', xNorm, yNorm, navigateToSource: true });
+    });
+
+    panel.addEventListener('wheel', event => {
+      if (!event.altKey || rootWidth <= 0 || rootHeight <= 0) {
+        return;
+      }
+
+      event.preventDefault();
+      const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
+      zoom = Math.max(0.2, Math.min(4, zoom * factor));
+      applyPreviewScale();
+      relayoutOverlays();
+    }, { passive: false });
+
+    preview.addEventListener('mousemove', event => {
+      if (selectionLocked) {
+        return;
+      }
+      const rect = preview.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return;
+      }
+
+      const xNorm = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+      const yNorm = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+      if (hoverTimer) {
+        clearTimeout(hoverTimer);
+      }
+
+      hoverTimer = setTimeout(() => {
+        vscode.postMessage({ type: 'hoverHitTest', xNorm, yNorm });
+      }, 70);
+    });
+
+    preview.addEventListener('mouseleave', () => {
+      clearHoverOverlay();
+      if (preview.style.display !== 'none') {
+        preview.style.cursor = 'default';
+      }
+    });
+
+    function clearHoverOverlay() {
+      currentHoverHit = null;
+      hoverOverlay.style.display = 'none';
+      hoverLabel.style.display = 'none';
+    }
+
+    function applyOverlayGeometry(overlay, label, hit) {
+      if (!hit) {
+        overlay.style.display = 'none';
+        if (label) {
+          label.style.display = 'none';
+        }
+        return;
+      }
+
+      const rect = preview.getBoundingClientRect();
+      if (!rect.width || !rect.height || hit.rootWidth <= 0 || hit.rootHeight <= 0) {
+        overlay.style.display = 'none';
+        if (label) {
+          label.style.display = 'none';
+        }
+        return;
+      }
+
+      const scaleX = rect.width / hit.rootWidth;
+      const scaleY = rect.height / hit.rootHeight;
+      const left = hit.boundsX * scaleX;
+      const top = hit.boundsY * scaleY;
+      const width = Math.max(1, hit.boundsWidth * scaleX);
+      const height = Math.max(1, hit.boundsHeight * scaleY);
+
+      overlay.style.left = left + 'px';
+      overlay.style.top = top + 'px';
+      overlay.style.width = width + 'px';
+      overlay.style.height = height + 'px';
+      overlay.style.display = 'block';
+
+      if (label) {
+        const hoverName = hit.elementName && hit.elementName.trim().length > 0
+          ? hit.elementName
+          : '(unnamed)';
+        label.textContent = hit.typeName + ' - ' + hoverName;
+        label.style.left = Math.max(0, left) + 'px';
+        label.style.top = Math.max(0, top) + 'px';
+        label.style.display = 'block';
+      }
+    }
+
+    function relayoutOverlays() {
+      applyOverlayGeometry(hitOverlay, null, currentSelectionHit);
+      if (!selectionLocked) {
+        applyOverlayGeometry(hoverOverlay, hoverLabel, currentHoverHit);
+      }
+    }
+
+    window.addEventListener('resize', relayoutOverlays);
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => relayoutOverlays());
+      observer.observe(panel);
+    }
 
     function readDroppedToolboxItem(dataTransfer) {
       if (!dataTransfer) {
@@ -763,7 +1037,9 @@ export class WpfLivePreviewPanel {
       if (msg.type === 'loading') {
         state.style.display = 'block';
         state.textContent = 'Refreshing preview…';
+        currentSelectionHit = null;
         hitOverlay.style.display = 'none';
+        clearHoverOverlay();
         showDropOverlay(false);
         return;
       }
@@ -772,10 +1048,11 @@ export class WpfLivePreviewPanel {
         preview.style.display = 'none';
         state.style.display = 'block';
         state.textContent = msg.message || 'Could not capture preview.';
-        selection.textContent = 'Selection: none';
-        properties.textContent = 'Properties: none';
+        setDefaultCards();
         applyHint.textContent = '';
+        currentSelectionHit = null;
         hitOverlay.style.display = 'none';
+        clearHoverOverlay();
         showDropOverlay(false);
         return;
       }
@@ -784,22 +1061,51 @@ export class WpfLivePreviewPanel {
         preview.src = msg.imageDataUrl;
         rootWidth = Number(msg.width || 0);
         rootHeight = Number(msg.height || 0);
+        zoom = 1;
+        applyPreviewScale();
         preview.style.display = 'block';
         state.style.display = 'none';
+        currentSelectionHit = null;
         hitOverlay.style.display = 'none';
+        clearHoverOverlay();
         showDropOverlay(false);
-        meta.textContent =
-          'Source: ' + (msg.source || 'runtime') + '\\n' +
-          'Size: ' + msg.width + 'x' + msg.height + '\\n' +
-          'Project: ' + (msg.projectPath || '') + '\\n' +
-          'XAML: ' + (msg.xamlPath || '') + '\\n' +
-          'Updated: ' + (msg.at || '');
+        meta.innerHTML =
+          chip('Source', msg.source || 'runtime') +
+          chip('Size', (msg.width || '?') + 'x' + (msg.height || '?')) +
+          chip('Updated', msg.at || '');
+        meta.title = 'Project: ' + (msg.projectPath || '') + '\\nXAML: ' + (msg.xamlPath || '');
+        preview.style.cursor = 'default';
+        return;
+      }
+
+      if (msg.type === 'hoverClear') {
+        if (selectionLocked) {
+          return;
+        }
+        clearHoverOverlay();
+        if (preview.style.display !== 'none') {
+          preview.style.cursor = 'default';
+        }
+        return;
+      }
+
+      if (msg.type === 'hoverResult' && msg.hit) {
+        if (selectionLocked) {
+          return;
+        }
+        const hit = msg.hit;
+        currentHoverHit = hit;
+        applyOverlayGeometry(hoverOverlay, hoverLabel, currentHoverHit);
+        preview.style.cursor = 'pointer';
         return;
       }
 
       if (msg.type === 'hitTestError') {
-        selection.textContent = 'Selection: ' + (msg.message || 'none');
-        properties.textContent = 'Properties: none';
+        selection.innerHTML = '<div class="kv">' + row('Selection', msg.message || 'None') + '</div>';
+        properties.innerHTML = '<div class="kv">' + row('Info', 'No properties') + '</div>';
+        hoverOverlay.style.display = 'none';
+        hoverLabel.style.display = 'none';
+        preview.style.cursor = 'default';
         currentSelection = null;
         currentCapabilities = {
           canEditText: false,
@@ -827,9 +1133,12 @@ export class WpfLivePreviewPanel {
         currentSelection = hit;
         const typeName = hit.typeName || '(unknown)';
         const elementName = hit.elementName || '(unnamed)';
-        selection.textContent =
-          'Selection: ' + typeName + '\\n' +
-          'Name: ' + elementName;
+        selection.innerHTML =
+          '<div class="kv">' +
+          row('Type', typeName) +
+          row('Name', elementName) +
+          '</div>';
+        currentSelectionHit = hit;
         if (msg.properties) {
           const p = msg.properties;
           textValue.value = p.text || '';
@@ -843,22 +1152,26 @@ export class WpfLivePreviewPanel {
           applyText.disabled = !currentCapabilities.canEditText;
           applyBackground.disabled = !currentCapabilities.canEditBackground;
           applyForeground.disabled = !currentCapabilities.canEditForeground;
-          properties.textContent =
-            'Properties:\\n' +
-            'Text: ' + (p.text || '(n/a)') + '\\n' +
-            'Background: ' + (p.background || '(n/a)') + '\\n' +
-            'Foreground: ' + (p.foreground || '(n/a)') + '\\n' +
-            'Width/Height: ' + (p.width || '(auto)') + ' / ' + (p.height || '(auto)') + '\\n' +
-            'Actual Size: ' + (p.actualWidth || '0') + ' x ' + (p.actualHeight || '0') + '\\n' +
-            'Margin: ' + (p.margin || '(n/a)') + '\\n' +
-            'Alignment: ' + (p.horizontalAlignment || '(n/a)') + ' / ' + (p.verticalAlignment || '(n/a)') + '\\n' +
-            'IsEnabled: ' + (p.isEnabled || '(n/a)') + '\\n' +
-            'Visibility: ' + (p.visibility || '(n/a)') + '\\n' +
-            'Editable: Text=' + (currentCapabilities.canEditText ? 'Yes' : 'No') +
-            ', Background=' + (currentCapabilities.canEditBackground ? 'Yes' : 'No') +
-            ', Foreground=' + (currentCapabilities.canEditForeground ? 'Yes' : 'No');
+          properties.innerHTML =
+            '<div class="kv">' +
+            row('Text', p.text || '(n/a)') +
+            row('Background', p.background || '(n/a)') +
+            row('Foreground', p.foreground || '(n/a)') +
+            row('Size (W/H)', (p.width || '(auto)') + ' / ' + (p.height || '(auto)')) +
+            row('Actual', (p.actualWidth || '0') + ' x ' + (p.actualHeight || '0')) +
+            row('Margin', p.margin || '(n/a)') +
+            row('Align', (p.horizontalAlignment || '(n/a)') + ' / ' + (p.verticalAlignment || '(n/a)')) +
+            row('Enabled', p.isEnabled || '(n/a)') +
+            row('Visibility', p.visibility || '(n/a)') +
+            row(
+              'Editable',
+              'Text=' + (currentCapabilities.canEditText ? 'Yes' : 'No') +
+              ', Background=' + (currentCapabilities.canEditBackground ? 'Yes' : 'No') +
+              ', Foreground=' + (currentCapabilities.canEditForeground ? 'Yes' : 'No')
+            ) +
+            '</div>';
         } else {
-          properties.textContent = 'Properties: ' + (msg.propertiesError || 'unavailable');
+          properties.innerHTML = '<div class="kv">' + row('Error', msg.propertiesError || 'Unavailable') + '</div>';
           currentCapabilities = {
             canEditText: false,
             canEditBackground: false,
@@ -869,23 +1182,9 @@ export class WpfLivePreviewPanel {
           applyForeground.disabled = true;
         }
 
-        const rect = preview.getBoundingClientRect();
-        if (rect.width && rect.height && rootWidth > 0 && rootHeight > 0) {
-          const scaleX = rect.width / rootWidth;
-          const scaleY = rect.height / rootHeight;
-          const left = hit.boundsX * scaleX;
-          const top = hit.boundsY * scaleY;
-          const width = Math.max(1, hit.boundsWidth * scaleX);
-          const height = Math.max(1, hit.boundsHeight * scaleY);
-
-          hitOverlay.style.left = left + 'px';
-          hitOverlay.style.top = top + 'px';
-          hitOverlay.style.width = width + 'px';
-          hitOverlay.style.height = height + 'px';
-          hitOverlay.style.display = 'block';
-        } else {
-          hitOverlay.style.display = 'none';
-        }
+        applyOverlayGeometry(hitOverlay, null, currentSelectionHit);
+        clearHoverOverlay();
+        preview.style.cursor = 'default';
       }
     });
   </script>
