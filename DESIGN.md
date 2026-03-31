@@ -65,6 +65,7 @@ Runtime hot reload is now **runtime-first, push-based, and debugger-free**. The 
 4. **Framework support** — Works for both .NET Framework (SDK-style `.csproj`) and modern .NET (`.NET 5+`) projects. Legacy non-SDK projects fall back to `msbuild`.
 5. **Project/solution selection** — When project context is ambiguous, show a quick-pick UI. Suppress this UI when the **C# Dev Kit** extension is detected (it already manages solution context).
 6. **Status bar item** — Always shows the currently selected project and allows switching.
+7. **Toolbox drag/drop in VS Code** — Allow WPF controls from a VS Code pane to be dragged into an active `.xaml` editor tab and inserted as valid XAML snippets.
 
 ---
 
@@ -263,6 +264,101 @@ One designer process is kept alive **per project**. This avoids the startup over
 9. Check designer executable exists; if not → offer to run buildDesignerTools.
 10. launchDesigner(xamlPath, assemblies).
 ```
+
+### 6. VS Code Toolbox Drag-and-Drop (New Design)
+
+This adds AXSG-style authoring ergonomics to the WPF extension: users drag controls from a toolbox pane into the text editor and the extension inserts the corresponding XAML.
+
+#### Scope
+
+- Drag from a VS Code side pane (webview view) into an active `.xaml` text editor.
+- Insert control markup at the drop position if available; otherwise insert at current cursor/selection.
+- Ensure namespace declarations are present before insertion (for custom controls).
+- Keep the feature text-editor-first; it does not depend on the standalone `XamlDesigner.exe` process.
+
+#### Proposed VS Code pieces
+
+1. **Toolbox View Provider**
+   - Register `wpf.toolbox` via `vscode.window.registerWebviewViewProvider`.
+   - Render grouped controls (Core, Layout, Content, Items, Shapes, Media, Custom).
+   - Emit drag payloads using `DataTransfer` with MIME:
+     - `application/vnd.vscode-wpf.toolbox-item+json`
+     - fallback `text/plain`
+
+2. **Drop Into Editor**
+   - Register `DocumentDropEditProvider` for `{ language: 'xaml', scheme: 'file' }`.
+   - Parse toolbox payload and return a `DocumentDropEdit` snippet.
+   - Respect `dropPosition` when provided by VS Code.
+
+3. **Snippet/Template Engine**
+   - Map each toolbox item to a snippet template with tab-stops.
+   - Examples:
+     - `Button` -> `<Button Content="$1" />`
+     - `Grid` -> `<Grid>\n\t$1\n</Grid>`
+     - `TextBox` -> `<TextBox Text="$1" />`
+   - For controls needing child content, produce paired tags by default.
+
+4. **Namespace Injection Helper**
+   - Before final edit, inspect root element namespaces.
+   - If dropped type is in a CLR namespace not yet mapped, add `xmlns:local="clr-namespace:...;assembly=..."`.
+   - Reuse language-service/project metadata where available to avoid incorrect assembly names.
+
+#### Drag payload contract
+
+```json
+{
+  "kind": "wpfToolboxItem",
+  "displayName": "Button",
+  "typeName": "System.Windows.Controls.Button",
+  "xmlNamespace": "http://schemas.microsoft.com/winfx/2006/xaml/presentation",
+  "requiresPrefix": false,
+  "defaultSnippet": "<Button Content=\"$1\" />"
+}
+```
+
+For custom/user controls:
+
+```json
+{
+  "kind": "wpfToolboxItem",
+  "displayName": "MyControl",
+  "typeName": "MyCompany.App.Controls.MyControl",
+  "clrNamespace": "MyCompany.App.Controls",
+  "assemblyName": "MyCompany.App",
+  "prefixHint": "local",
+  "requiresPrefix": true,
+  "defaultSnippet": "<local:MyControl />"
+}
+```
+
+#### Insertion behavior rules
+
+1. If the drop lands inside an existing tag attribute region, reject drop with a friendly message.
+2. If the drop lands in element content, insert with surrounding indentation inferred from the line.
+3. If there is an active selection, replace selection only when the drop target equals that selection range; otherwise insert at drop target.
+4. Always return a snippet string so users can tab through placeholders immediately.
+5. Keep undo atomic (single workspace edit per drop).
+
+#### Interaction with existing hot reload flow
+
+- After insertion, normal document change events already trigger:
+  - language server reanalysis,
+  - optional live designer update (`wpf.livePreviewOnEdit`),
+  - manual runtime push via `WPF: Hot Reload`.
+- No extra hot reload transport is required for v1.
+
+#### Initial implementation phases
+
+1. **Phase T1**: Static built-in control list + drop insertion provider.
+2. **Phase T2**: Namespace auto-injection for custom controls.
+3. **Phase T3**: Dynamic toolbox population from project symbols (language server integration).
+4. **Phase T4**: Optional bidirectional sync with visual designer selection (future).
+
+#### Success criteria
+
+- User can drag `Button` from toolbox pane to any open `.xaml` editor and get snippet insertion at drop point.
+- Inserted markup is syntactically valid XAML and undoable in one step.
+- Custom control drops automatically add missing `xmlns` prefixes when required.
 
 ---
 

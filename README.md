@@ -12,6 +12,8 @@ development experience for WPF with open source components
 - XAML Source Generator (XSG) based language server
 - SharpDbg based XAML Hot Reload
 
+> Note that to inspect runtime state of your WPF apps, tools like [Snoop](https://github.com/snoopwpf/snoopwpf) can be used. We might explore how to integrate them in this extension in the future.
+
 ## Getting started
 
 - Activates on `*.xaml` files.

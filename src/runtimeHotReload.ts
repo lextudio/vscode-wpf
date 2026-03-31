@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import { areProjectOutputsUpToDate, getLaunchTarget } from './projectDiscovery';
+import { areProjectOutputsUpToDate, getLaunchTarget, parseProject } from './projectDiscovery';
 import { buildProject } from './designerLauncher';
 
 interface RuntimeSessionInfo {
@@ -68,6 +68,19 @@ export async function startRuntimeHotReloadSession(
   if (hasRunningRuntimeSession(projectPath)) {
     getOutputChannel().appendLine(`[Runtime] Reusing existing session for ${projectPath}`);
     return true;
+  }
+
+  // DOTNET_STARTUP_HOOKS is a .NET Core/5+ feature — it does not exist in .NET Framework.
+  const { targetFramework } = parseProject(projectPath);
+  if (/^net\d{2,}$/i.test(targetFramework) || /^net4/i.test(targetFramework)) {
+    getOutputChannel().appendLine(
+      `[Runtime] Project targets .NET Framework (${targetFramework}). Runtime hot reload is not supported.`
+    );
+    vscode.window.showWarningMessage(
+      `Runtime hot reload is not supported for .NET Framework projects (${targetFramework}). ` +
+      'Use the XAML Designer preview instead.'
+    );
+    return false;
   }
 
   const cfg = vscode.workspace.getConfiguration('wpf');

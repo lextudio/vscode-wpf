@@ -17,9 +17,9 @@ type PipeResponse = {
 };
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
-const sampleProjectPath = path.join(repoRoot, 'sample', 'sample.csproj');
-const mainWindowPath = path.join(repoRoot, 'sample', 'MainWindow.xaml');
-const samplePanePath = path.join(repoRoot, 'sample', 'SamplePane.xaml');
+const sampleProjectPath = path.join(repoRoot, 'sample', 'net6.0', 'sample.csproj');
+const mainWindowPath = path.join(repoRoot, 'sample', 'net6.0', 'MainWindow.xaml');
+const samplePanePath = path.join(repoRoot, 'sample', 'net6.0', 'SamplePane.xaml');
 
 export async function run(): Promise<void> {
   await vscode.window.showTextDocument(vscode.Uri.file(mainWindowPath));

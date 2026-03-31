@@ -8,6 +8,7 @@ import {
   isCSharpDevKitInstalled,
   isWpfProject,
   isWpfXaml,
+  parseProject,
   showProjectPicker,
 } from './projectDiscovery';
 import {
@@ -30,6 +31,7 @@ import {
   showRuntimeHotReloadOutput,
   startRuntimeHotReloadSession,
 } from './runtimeHotReload';
+import { registerToolbox } from './toolbox';
 
 // Per-workspace-folder project selection, keyed by workspace folder path.
 const selectedProjects = new Map<string, string>();
@@ -42,6 +44,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Start the WPF XAML language server (no-op if binary not yet built).
   startLanguageServer(context);
   registerRuntimeHotReload(context);
+  registerToolbox(context);
 
   // -------------------------------------------------------------------------
   // Command: wpf.previewXaml
@@ -380,6 +383,20 @@ export function activate(context: vscode.ExtensionContext): void {
         pipeName: info.pipeName ?? null,
         pid: info.childProcess.pid ?? null,
       };
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf._test.isWpfProject', (projectPath?: string) => {
+      if (!projectPath) { return false; }
+      return isWpfProject(projectPath);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf._test.parseProject', (projectPath?: string) => {
+      if (!projectPath) { return null; }
+      return parseProject(projectPath);
     })
   );
 

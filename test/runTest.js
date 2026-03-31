@@ -34,7 +34,8 @@ async function main() {
   const repoRoot = path.resolve(__dirname, '..');
   const extensionDevelopmentPath = repoRoot;
   const extensionTestsPath = path.join(repoRoot, 'out', 'test', 'suite', 'index.js');
-  const sampleProject = path.join(repoRoot, 'sample', 'sample.csproj');
+  const sampleProject = path.join(repoRoot, 'sample', 'net6.0', 'sample.csproj');
+  const frameworkSampleProject = path.join(repoRoot, 'sample', 'net462', 'sample.csproj');
   const sharpDbgProject = path.join(repoRoot, 'external', 'SharpDbg', 'src', 'SharpDbg.Cli', 'SharpDbg.Cli.csproj');
   const localVsCodeExecutablePath = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Microsoft VS Code', 'bin', 'code.cmd');
 
@@ -43,6 +44,7 @@ async function main() {
 
   await runCommand('dotnet', ['build', sharpDbgProject, '--configuration', 'Debug', '-nologo']);
   await runCommand('dotnet', ['build', sampleProject, '--configuration', 'Debug', '-nologo']);
+  await runCommand('msbuild', [frameworkSampleProject, '/p:Configuration=Debug', '/nologo', '/v:m']);
 
   try {
     await runTests({

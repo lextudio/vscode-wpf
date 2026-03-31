@@ -144,10 +144,15 @@ export function parseProject(projectPath: string): { projectName: string; target
 
     const tfm = xmlValue(xml, 'TargetFramework');
     const tfms = xmlValue(xml, 'TargetFrameworks');
+    const tfmVersion = xmlValue(xml, 'TargetFrameworkVersion');
     if (tfm) {
       targetFramework = tfm;
     } else if (tfms) {
       targetFramework = tfms.split(';')[0].trim();
+    } else if (tfmVersion) {
+      // Legacy .NET Framework projects use <TargetFrameworkVersion>v4.6.2</TargetFrameworkVersion>.
+      // Convert to a short TFM moniker like "net462".
+      targetFramework = 'net' + tfmVersion.replace(/^v/i, '').replace(/\./g, '');
     }
 
     const op = xmlValue(xml, 'OutputPath');
