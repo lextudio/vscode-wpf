@@ -192,8 +192,8 @@
         },
         "wpf.liveRuntimeOnEdit": {
           "type": "boolean",
-          "default": true,
-          "description": "When a SharpDbg hot reload session is running, route XAML editor changes to the runtime apply transport."
+          "default": false,
+          "description": "Reserved for automatic runtime hot reload on edit. The current runtime hot reload flow is push-based from the Hot Reload command."
         },
         "wpf.buildConfiguration": {
           "type": "string",

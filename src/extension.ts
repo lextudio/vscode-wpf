@@ -295,13 +295,24 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      if (hasRunningRuntimeSession(projectPath)) {
+        const xamlDocument = await vscode.workspace.openTextDocument(resource);
+        const pushed = await pushRuntimeXamlUpdate(projectPath, xamlPath, xamlDocument.getText());
+        if (pushed) {
+          vscode.window.showInformationMessage(
+            `Applied hot reload update for ${path.basename(xamlPath)}.`
+          );
+        }
+        return;
+      }
+
       const started = await startRuntimeHotReloadSession(context, projectPath, xamlPath);
       if (!started) {
         return;
       }
 
       vscode.window.showInformationMessage(
-        `Started WPF hot reload session for ${path.basename(projectPath)}.`
+        `Started WPF hot reload session for ${path.basename(projectPath)}. Click Hot Reload again to push the current XAML file.`
       );
     })
   );
@@ -465,8 +476,7 @@ async function scheduleHotReload(document: vscode.TextDocument): Promise<void> {
 
   const cfg = vscode.workspace.getConfiguration('wpf');
   const livePreviewOnEdit = cfg.get<boolean>('livePreviewOnEdit', true);
-  const liveRuntimeOnEdit = cfg.get<boolean>('liveRuntimeOnEdit', true);
-  if (!livePreviewOnEdit && !liveRuntimeOnEdit) {
+  if (!livePreviewOnEdit) {
     return;
   }
 
@@ -499,13 +509,6 @@ async function pushHotReload(document: vscode.TextDocument): Promise<void> {
 
   if (blockingDiagnostics.length > 0) {
     return;
-  }
-
-  if (hasRunningRuntimeSession(projectPath)) {
-    const applied = await pushRuntimeXamlUpdate(projectPath, xamlPath, document.getText());
-    if (applied) {
-      return;
-    }
   }
 
   if (!hasRunningDesignerSession(projectPath)) {
