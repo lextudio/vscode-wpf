@@ -11,9 +11,11 @@ using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
+using System.Windows.Threading;
 using System.Xaml;
 using System.Xml.Linq;
 using System.Xml;
@@ -24,6 +26,7 @@ public static class WpfHotReloadAgent
 {
     private static volatile bool _pipeListenerRunning;
     private static CancellationTokenSource? _pipeCts;
+    private static HotReloadOverlay? _overlay;
 
     public static string PipeName { get; } =
         Environment.GetEnvironmentVariable("WPF_HOTRELOAD_PIPE")
@@ -78,6 +81,9 @@ public static class WpfHotReloadAgent
                 server.WaitForConnection();
                 Log("Client connected");
 
+                // Inject the overlay toolbar on first connection (if not already injected).
+                EnsureOverlayInjected();
+
                 using var reader = new StreamReader(server, new UTF8Encoding(false));
                 using var writer = new StreamWriter(server, new UTF8Encoding(false)) { AutoFlush = true };
 
@@ -117,8 +123,17 @@ public static class WpfHotReloadAgent
                         else
                         {
                             Log("Dispatching to UI thread...");
+                            app.Dispatcher.Invoke(() => UpdateOverlayStatus(OverlayState.Applying, "Applying\u2026"));
                             result = app.Dispatcher.Invoke(() => ApplyXamlTextCore(request.FilePath, request.XamlText));
                             Log($"Dispatch result: {result}");
+                            if (result.StartsWith("ok", StringComparison.Ordinal))
+                            {
+                                app.Dispatcher.Invoke(() => UpdateOverlayStatus(OverlayState.Applied, "Updated"));
+                            }
+                            else
+                            {
+                                app.Dispatcher.Invoke(() => UpdateOverlayStatus(OverlayState.Error, result));
+                            }
                         }
                     }
                 }
@@ -159,6 +174,289 @@ public static class WpfHotReloadAgent
         public string? Result { get; set; }
         public string? Value { get; set; }
     }
+
+    // ── Overlay toolbar ──────────────────────────────────────────────────
+
+    internal enum OverlayState
+    {
+        Connected,
+        Applying,
+        Applied,
+        Error,
+        Disconnected,
+    }
+
+    /// <summary>
+    /// Called from the pipe listener's background thread to inject the overlay
+    /// into the WPF app once Application.Current and MainWindow are available.
+    /// </summary>
+    internal static void EnsureOverlayInjected()
+    {
+        var app = Application.Current;
+        if (app is null)
+        {
+            return;
+        }
+
+        app.Dispatcher.Invoke(() =>
+        {
+            if (_overlay is not null)
+            {
+                return;
+            }
+
+            var mainWindow = app.MainWindow;
+            if (mainWindow is null || !mainWindow.IsLoaded)
+            {
+                // Retry when the window finishes loading.
+                if (mainWindow is not null)
+                {
+                    mainWindow.Loaded += (_, _) =>
+                    {
+                        if (_overlay is null)
+                        {
+                            InjectOverlay(mainWindow);
+                        }
+                    };
+                }
+                return;
+            }
+
+            InjectOverlay(mainWindow);
+        });
+    }
+
+    private static void InjectOverlay(Window mainWindow)
+    {
+        try
+        {
+            var adornerLayer = AdornerLayer.GetAdornerLayer(mainWindow.Content as UIElement);
+            if (adornerLayer is not null && mainWindow.Content is UIElement rootElement)
+            {
+                _overlay = new HotReloadOverlay(rootElement);
+                adornerLayer.Add(_overlay);
+                Log("Overlay toolbar injected via AdornerLayer.");
+            }
+            else
+            {
+                // Fallback: inject as a Popup
+                _overlay = null;
+                Log("AdornerLayer not available; overlay toolbar skipped.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Failed to inject overlay toolbar: {ex.Message}");
+        }
+    }
+
+    private static void UpdateOverlayStatus(OverlayState state, string message)
+    {
+        _overlay?.UpdateStatus(state, message);
+    }
+
+    /// <summary>
+    /// A lightweight adorner that displays a hot reload status bar at the top of the window.
+    /// </summary>
+    private sealed class HotReloadOverlay : Adorner
+    {
+        private readonly Border _border;
+        private readonly TextBlock _label;
+        private DispatcherTimer? _fadeTimer;
+        private bool _collapsed;
+
+        // Drag state
+        private bool _isDragging;
+        private Point _dragStart;      // mouse position when drag began (relative to adorner)
+        private Point _position;       // top-left of the border in adorner coordinates
+        private bool _positionSet;     // false until the user first drags (use default centering until then)
+
+        public HotReloadOverlay(UIElement adornedElement) : base(adornedElement)
+        {
+            IsHitTestVisible = true;
+
+            _label = new TextBlock
+            {
+                Text = "\U0001F525 Hot Reload",
+                Foreground = Brushes.White,
+                FontSize = 11,
+                FontFamily = new FontFamily("Segoe UI"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 0, 0),
+            };
+
+            var collapseButton = new Button
+            {
+                Content = "\u2715",
+                FontSize = 10,
+                Foreground = Brushes.White,
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Cursor = System.Windows.Input.Cursors.Hand,
+                Padding = new Thickness(4, 0, 4, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(4, 0, 4, 0),
+            };
+            collapseButton.Click += (_, _) => ToggleCollapse();
+
+            var panel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Children = { _label, collapseButton },
+            };
+
+            _border = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(200, 40, 40, 40)),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(4, 2, 4, 2),
+                Cursor = System.Windows.Input.Cursors.SizeAll,
+                Child = panel,
+            };
+
+            _border.MouseLeftButtonDown += OnBorderMouseDown;
+            _border.MouseLeftButtonUp += OnBorderMouseUp;
+            _border.MouseMove += OnBorderMouseMove;
+
+            AddVisualChild(_border);
+        }
+
+        private void OnBorderMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            _isDragging = true;
+            _dragStart = e.GetPosition(this);
+            // Capture so we keep getting events if the mouse leaves the border
+            _border.CaptureMouse();
+            e.Handled = true;
+        }
+
+        private void OnBorderMouseUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (!_isDragging) return;
+            _isDragging = false;
+            _border.ReleaseMouseCapture();
+            e.Handled = true;
+        }
+
+        private void OnBorderMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+        {
+            if (!_isDragging) return;
+
+            var current = e.GetPosition(this);
+            var delta = current - _dragStart;
+
+            var newX = _position.X + delta.X;
+            var newY = _position.Y + delta.Y;
+
+            // Clamp so the toolbar stays inside the adorned element bounds
+            var adornerSize = RenderSize;
+            var borderSize = _border.RenderSize;
+            newX = Math.Max(0, Math.Min(newX, adornerSize.Width - borderSize.Width));
+            newY = Math.Max(0, Math.Min(newY, adornerSize.Height - borderSize.Height));
+
+            _position = new Point(newX, newY);
+            _positionSet = true;
+            _dragStart = current;
+
+            InvalidateArrange();
+            e.Handled = true;
+        }
+
+        public void UpdateStatus(OverlayState state, string message)
+        {
+            _fadeTimer?.Stop();
+
+            if (_collapsed && state != OverlayState.Error)
+            {
+                return;
+            }
+
+            switch (state)
+            {
+                case OverlayState.Connected:
+                    _label.Text = "\U0001F525 Hot Reload";
+                    _border.Background = new SolidColorBrush(Color.FromArgb(200, 40, 40, 40));
+                    break;
+                case OverlayState.Applying:
+                    _label.Text = "\u27F3 Applying\u2026";
+                    _border.Background = new SolidColorBrush(Color.FromArgb(200, 30, 80, 160));
+                    break;
+                case OverlayState.Applied:
+                    _label.Text = "\u2713 Updated";
+                    _border.Background = new SolidColorBrush(Color.FromArgb(200, 30, 120, 50));
+                    // Revert to idle after 2 seconds
+                    _fadeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+                    _fadeTimer.Tick += (_, _) =>
+                    {
+                        _fadeTimer.Stop();
+                        UpdateStatus(OverlayState.Connected, "");
+                    };
+                    _fadeTimer.Start();
+                    break;
+                case OverlayState.Error:
+                    _label.Text = "\u2717 Error";
+                    _label.ToolTip = message;
+                    _border.Background = new SolidColorBrush(Color.FromArgb(200, 160, 30, 30));
+                    break;
+                case OverlayState.Disconnected:
+                    _label.Text = "\u25CB Disconnected";
+                    _border.Background = new SolidColorBrush(Color.FromArgb(200, 120, 120, 40));
+                    break;
+            }
+        }
+
+        private void ToggleCollapse()
+        {
+            _collapsed = !_collapsed;
+            _label.Visibility = _collapsed ? Visibility.Collapsed : Visibility.Visible;
+            if (_collapsed)
+            {
+                _label.Text = "\U0001F525";
+            }
+            else
+            {
+                UpdateStatus(OverlayState.Connected, "");
+            }
+        }
+
+        protected override int VisualChildrenCount => 1;
+
+        protected override Visual GetVisualChild(int index) => _border;
+
+        protected override Size MeasureOverride(Size constraint)
+        {
+            _border.Measure(constraint);
+            return _border.DesiredSize;
+        }
+
+        protected override Size ArrangeOverride(Size finalSize)
+        {
+            var borderSize = _border.DesiredSize;
+
+            Point origin;
+            if (_positionSet)
+            {
+                // Clamp to keep the toolbar fully visible after window resize
+                var x = Math.Max(0, Math.Min(_position.X, finalSize.Width - borderSize.Width));
+                var y = Math.Max(0, Math.Min(_position.Y, finalSize.Height - borderSize.Height));
+                origin = new Point(x, y);
+            }
+            else
+            {
+                // Default: centered horizontally at the top
+                origin = new Point((finalSize.Width - borderSize.Width) / 2, 0);
+            }
+
+            _border.Arrange(new Rect(origin, borderSize));
+
+            // Keep _position in sync with the clamped origin so dragging starts correctly
+            _position = origin;
+
+            return finalSize;
+        }
+    }
+
+    // ── End overlay ──────────────────────────────────────────────────────
 
     public static string ApplyXamlTextFromBase64(string filePath, string base64Text)
     {

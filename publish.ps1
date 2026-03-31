@@ -50,6 +50,26 @@ function Load-Token {
 	}
 }
 
+function Read-TokenFromPrompt {
+	if (-not [Environment]::UserInteractive) {
+		return $null
+	}
+
+	Write-Host 'Enter VS Code Marketplace token (PAT):'
+	$secureInput = Read-Host -AsSecureString
+	if (-not $secureInput) {
+		return $null
+	}
+
+	$credential = New-Object System.Management.Automation.PSCredential ('vsce', $secureInput)
+	$plain = $credential.GetNetworkCredential().Password
+	if ([string]::IsNullOrWhiteSpace($plain)) {
+		return $null
+	}
+
+	return $plain
+}
+
 function Get-VsixFiles {
 	$pkg = Get-Content package.json -Raw | ConvertFrom-Json
 	$expected = @(
@@ -81,7 +101,16 @@ else {
 }
 
 if ([string]::IsNullOrWhiteSpace($Token)) {
-	Write-Warning 'No Marketplace token was provided, and no stored token could be loaded. Publishing was skipped.'
+	$Token = Read-TokenFromPrompt
+
+	if (-not [string]::IsNullOrWhiteSpace($Token)) {
+		Save-Token $Token
+		Write-Host "Saved Marketplace token for the current Windows user at $tokenStorePath"
+	}
+}
+
+if ([string]::IsNullOrWhiteSpace($Token)) {
+	Write-Warning 'No Marketplace token was provided, and no stored token could be loaded or entered. Publishing was skipped.'
 	exit 1
 }
 

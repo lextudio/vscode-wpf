@@ -8,20 +8,18 @@ import { areProjectOutputsUpToDate, getLaunchTarget } from './projectDiscovery';
 import { buildProject } from './designerLauncher';
 
 interface RuntimeSessionInfo {
-  debugSession: vscode.DebugSession;
+  childProcess: cp.ChildProcess;
   projectPath: string;
   xamlPath?: string;
   warnedUnsupportedApply: boolean;
-  pipeName?: string;
-  pipeReady?: boolean;
+  pipeName: string;
+  pipeReady: boolean;
 }
 
 let outputChannel: vscode.OutputChannel | undefined;
 let extensionPath: string | undefined;
 
 const runtimeSessionsByProject = new Map<string, RuntimeSessionInfo>();
-const runtimeSessionsByDebugId = new Map<string, RuntimeSessionInfo>();
-const pendingPipeNameByProject = new Map<string, string>();
 
 function getOutputChannel(): vscode.OutputChannel {
   if (!outputChannel) {
@@ -38,65 +36,16 @@ export function showRuntimeHotReloadOutput(): void {
 export function registerRuntimeHotReload(context: vscode.ExtensionContext): void {
   extensionPath = context.extensionPath;
 
-  context.subscriptions.push(
-    vscode.debug.registerDebugConfigurationProvider('wpf-sharpdbg', new SharpDbgConfigurationProvider())
-  );
-
-  context.subscriptions.push(
-    vscode.debug.registerDebugAdapterDescriptorFactory(
-      'wpf-sharpdbg',
-      new SharpDbgDebugAdapterFactory(context)
-    )
-  );
-
-  context.subscriptions.push(
-    vscode.debug.onDidStartDebugSession(session => {
-      if (session.type !== 'wpf-sharpdbg') {
-        return;
-      }
-
-      const projectPath = getProjectPathFromSession(session);
-      if (!projectPath) {
-        return;
-      }
-
-      const info: RuntimeSessionInfo = {
-        debugSession: session,
-        projectPath,
-        xamlPath: getXamlPathFromSession(session),
-        warnedUnsupportedApply: false,
-        pipeName: pendingPipeNameByProject.get(projectPath),
-        pipeReady: false,
-      };
-      pendingPipeNameByProject.delete(projectPath);
-
-      runtimeSessionsByProject.set(projectPath, info);
-      runtimeSessionsByDebugId.set(session.id, info);
-      getOutputChannel().appendLine(`[Runtime] Started debug session for ${projectPath}`);
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.debug.onDidTerminateDebugSession(session => {
-      if (session.type !== 'wpf-sharpdbg') {
-        return;
-      }
-
-      const info = runtimeSessionsByDebugId.get(session.id);
-      if (!info) {
-        return;
-      }
-
-      runtimeSessionsByDebugId.delete(session.id);
-      runtimeSessionsByProject.delete(info.projectPath);
-      getOutputChannel().appendLine(`[Runtime] Terminated debug session for ${info.projectPath}`);
-    })
-  );
-
   context.subscriptions.push({
     dispose: () => {
+      for (const info of runtimeSessionsByProject.values()) {
+        try {
+          info.childProcess.kill();
+        } catch {
+          // ignore
+        }
+      }
       runtimeSessionsByProject.clear();
-      runtimeSessionsByDebugId.clear();
       outputChannel?.dispose();
       outputChannel = undefined;
     },
@@ -117,7 +66,7 @@ export async function startRuntimeHotReloadSession(
   xamlPath?: string
 ): Promise<boolean> {
   if (hasRunningRuntimeSession(projectPath)) {
-    getOutputChannel().appendLine(`[Runtime] Reusing existing debug session for ${projectPath}`);
+    getOutputChannel().appendLine(`[Runtime] Reusing existing session for ${projectPath}`);
     return true;
   }
 
@@ -143,7 +92,7 @@ export async function startRuntimeHotReloadSession(
 
   // Build the hot reload helper before launching so we can inject it
   // via DOTNET_STARTUP_HOOKS. This makes the pipe listener available
-  // immediately when the WPF app starts, bypassing debugger eval entirely.
+  // immediately when the WPF app starts.
   const helperAssemblyPath = await ensureRuntimeHelperBuilt();
 
   const launchTarget = getLaunchTarget(projectPath, dotnetPath);
@@ -154,38 +103,63 @@ export async function startRuntimeHotReloadSession(
     return false;
   }
 
-  const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(projectPath));
-  const name = `WPF Hot Reload: ${path.basename(projectPath, '.csproj')}`;
-
   const pipeName = `wpf-hotreload-${crypto.randomUUID()}`;
-  const env: Record<string, string> = {
-    WPF_HOTRELOAD_PIPE: pipeName,
-  };
+  const env: Record<string, string | undefined> = { ...process.env };
+  env['WPF_HOTRELOAD_PIPE'] = pipeName;
   if (helperAssemblyPath) {
     env['DOTNET_STARTUP_HOOKS'] = helperAssemblyPath;
     getOutputChannel().appendLine(`[Runtime] Injecting helper via DOTNET_STARTUP_HOOKS: ${helperAssemblyPath}`);
   } else {
-    getOutputChannel().appendLine('[Runtime] Runtime helper build skipped at launch; will bootstrap via debugger on first apply.');
+    getOutputChannel().appendLine('[Runtime] Runtime helper build failed; hot reload will not be available.');
+    return false;
   }
   getOutputChannel().appendLine(`[Runtime] Pipe name: ${pipeName}`);
 
-  // Store the pipe name so it's available when the debug session starts
-  pendingPipeNameByProject.set(projectPath, pipeName);
+  const program = launchTarget.program;
+  const args = launchTarget.args;
+  const cwd = launchTarget.cwd;
 
-  getOutputChannel().appendLine(`[Runtime] Launching ${launchTarget.program} ${launchTarget.args.join(' ')}`.trim());
+  getOutputChannel().appendLine(`[Runtime] Launching ${program} ${args.join(' ')}`.trim());
 
-  return vscode.debug.startDebugging(workspaceFolder, {
-    type: 'wpf-sharpdbg',
-    name,
-    request: 'launch',
-    program: launchTarget.program,
-    args: launchTarget.args,
-    cwd: launchTarget.cwd,
+  const child = cp.spawn(program, args, {
+    cwd,
     env,
-    stopAtEntry: false,
+    detached: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout?.on('data', (chunk: Buffer) => {
+    getOutputChannel().append(chunk.toString());
+  });
+  child.stderr?.on('data', (chunk: Buffer) => {
+    getOutputChannel().append(chunk.toString());
+  });
+
+  const info: RuntimeSessionInfo = {
+    childProcess: child,
     projectPath,
     xamlPath,
+    warnedUnsupportedApply: false,
+    pipeName,
+    pipeReady: false,
+  };
+
+  runtimeSessionsByProject.set(projectPath, info);
+  getOutputChannel().appendLine(`[Runtime] Started hot reload session for ${projectPath} (pid ${child.pid})`);
+
+  child.on('exit', (code, signal) => {
+    runtimeSessionsByProject.delete(projectPath);
+    const reason = signal ? `signal ${signal}` : `exit code ${code}`;
+    getOutputChannel().appendLine(`[Runtime] App exited (${reason}) for ${projectPath}`);
   });
+
+  child.on('error', (err) => {
+    runtimeSessionsByProject.delete(projectPath);
+    getOutputChannel().appendLine(`[Runtime] Failed to launch app: ${err.message}`);
+    vscode.window.showErrorMessage(`Failed to launch WPF app: ${err.message}`);
+  });
+
+  return true;
 }
 
 export async function pushRuntimeXamlUpdate(
@@ -196,105 +170,56 @@ export async function pushRuntimeXamlUpdate(
   getOutputChannel().appendLine(`[Runtime] Manual hot reload requested for ${xamlPath}`);
   const info = runtimeSessionsByProject.get(projectPath);
   if (!info) {
-    getOutputChannel().appendLine(`[Runtime] No running debug session found for ${projectPath}`);
+    getOutputChannel().appendLine(`[Runtime] No running session found for ${projectPath}`);
     return false;
   }
 
   info.xamlPath = xamlPath;
-  const helperAssemblyPath = await ensureRuntimeHelperBuilt();
-  if (!helperAssemblyPath) {
-    getOutputChannel().appendLine('[Runtime] Runtime helper could not be built or located.');
-    return false;
-  }
 
   if (!info.pipeReady) {
-    if (info.pipeName) {
-      const startupReady = await probeRuntimePipeReady(info.pipeName);
-      if (startupReady) {
-        info.pipeReady = true;
-        getOutputChannel().appendLine(`[Runtime] Runtime agent detected on pipe ${info.pipeName}.`);
-      }
-    }
-  }
-
-  if (!info.pipeReady) {
-    const bootstrapped = await ensureRuntimeAgentReady(info, helperAssemblyPath);
-    if (!bootstrapped) {
+    const startupReady = await probeRuntimePipeReady(info.pipeName);
+    if (startupReady) {
+      info.pipeReady = true;
+      getOutputChannel().appendLine(`[Runtime] Runtime agent detected on pipe ${info.pipeName}.`);
+    } else {
+      getOutputChannel().appendLine(`[Runtime] Runtime agent not ready on pipe ${info.pipeName}. The app may still be starting.`);
+      vscode.window.showWarningMessage(
+        'WPF app is still starting. Wait for the app to load and try again.'
+      );
       return false;
     }
   }
 
   // Primary path: named pipe to the resident runtime agent.
-  // No per-apply debugger evaluation should be required once bootstrap succeeds.
-  if (info.pipeName) {
-    const maxAttempts = 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        getOutputChannel().appendLine(`[Runtime] Retrying pipe connection (attempt ${attempt + 1}/${maxAttempts})...`);
-        await new Promise(r => setTimeout(r, 1000));
-      }
-
-      const pipeResult = await sendViaPipe(info.pipeName, xamlPath, xamlText);
-      if (pipeResult) {
-        if (pipeResult.success) {
-          info.pipeReady = true;
-          getOutputChannel().appendLine(`[Runtime] Applied XAML update via pipe for ${xamlPath}: ${pipeResult.message}`);
-          return true;
-        }
-
-        getOutputChannel().appendLine(`[Runtime] Pipe apply failed for ${xamlPath}: ${pipeResult.message}`);
-        vscode.window.showWarningMessage(`WPF hot reload failed: ${pipeResult.message}`);
-        return false;
-      }
+  const maxAttempts = 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      getOutputChannel().appendLine(`[Runtime] Retrying pipe connection (attempt ${attempt + 1}/${maxAttempts})...`);
+      await new Promise(r => setTimeout(r, 1000));
     }
 
-    info.pipeReady = false;
-    getOutputChannel().appendLine(
-      `[Runtime] Pipe unavailable after ${maxAttempts} attempts. Re-run Hot Reload to retry agent bootstrap.`
-    );
-    vscode.window.showWarningMessage(
-      'WPF hot reload runtime channel is not ready. Click Hot Reload again to retry bootstrap.'
-    );
-    return false;
+    const pipeResult = await sendViaPipe(info.pipeName, xamlPath, xamlText);
+    if (pipeResult) {
+      if (pipeResult.success) {
+        info.pipeReady = true;
+        getOutputChannel().appendLine(`[Runtime] Applied XAML update via pipe for ${xamlPath}: ${pipeResult.message}`);
+        return true;
+      }
+
+      getOutputChannel().appendLine(`[Runtime] Pipe apply failed for ${xamlPath}: ${pipeResult.message}`);
+      vscode.window.showWarningMessage(`WPF hot reload failed: ${pipeResult.message}`);
+      return false;
+    }
   }
 
-  getOutputChannel().appendLine('[Runtime] Agent is marked ready, but no pipe name is available.');
   info.pipeReady = false;
+  getOutputChannel().appendLine(
+    `[Runtime] Pipe unavailable after ${maxAttempts} attempts. Re-run Hot Reload to retry.`
+  );
+  vscode.window.showWarningMessage(
+    'WPF hot reload runtime channel is not ready. Click Hot Reload again to retry.'
+  );
   return false;
-}
-
-async function ensureRuntimeAgentReady(info: RuntimeSessionInfo, helperAssemblyPath: string): Promise<boolean> {
-  getOutputChannel().appendLine(`[Runtime] Bootstrapping runtime hot reload agent for ${info.projectPath}`);
-  try {
-    const result = await sendWpfHotReloadBootstrapRequest(info.debugSession, helperAssemblyPath);
-    if (!result.success) {
-      getOutputChannel().appendLine(`[Runtime] Agent bootstrap failed: ${result.message}`);
-      vscode.window.showWarningMessage(`WPF hot reload bootstrap failed: ${result.message}`);
-      return false;
-    }
-
-    if (!result.pipeName) {
-      getOutputChannel().appendLine('[Runtime] Agent bootstrap succeeded but no pipeName was returned.');
-      vscode.window.showWarningMessage('WPF hot reload bootstrap did not return a runtime channel.');
-      return false;
-    }
-
-    info.pipeName = result.pipeName;
-    info.pipeReady = true;
-    getOutputChannel().appendLine(`[Runtime] Runtime agent ready on pipe ${result.pipeName}`);
-    return true;
-  } catch (err) {
-    getOutputChannel().appendLine(`[Runtime] Agent bootstrap request failed: ${String(err)}`);
-
-    if (!info.warnedUnsupportedApply) {
-      info.warnedUnsupportedApply = true;
-      void vscode.window.showInformationMessage(
-        'The app is running under SharpDbg, but the debug adapter did not accept the WPF hot reload bootstrap request.'
-      );
-    }
-
-    return false;
-  }
 }
 
 function sendViaPipe(
@@ -387,80 +312,6 @@ function sendPipeRequest(
   });
 }
 
-class SharpDbgConfigurationProvider implements vscode.DebugConfigurationProvider {
-  resolveDebugConfiguration(
-    _folder: vscode.WorkspaceFolder | undefined,
-    config: vscode.DebugConfiguration
-  ): vscode.ProviderResult<vscode.DebugConfiguration> {
-    if (!config.type) {
-      config.type = 'wpf-sharpdbg';
-    }
-
-    if (!config.name) {
-      config.name = 'WPF Hot Reload';
-    }
-
-    if (!config.request) {
-      config.request = 'launch';
-    }
-
-    if (!config.cwd && config.projectPath) {
-      config.cwd = path.dirname(config.projectPath);
-    }
-
-    return config;
-  }
-}
-
-class SharpDbgDebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
-  constructor(private readonly context: vscode.ExtensionContext) { }
-
-  createDebugAdapterDescriptor(
-    _session: vscode.DebugSession
-  ): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
-    const executable = resolveSharpDbgExecutable(this.context);
-    if (!executable) {
-      throw new Error(
-        'SharpDbg.Cli was not found. Build SharpDbg or set the wpf.sharpDbgExecutable setting.'
-      );
-    }
-
-    const args = ['--interpreter=vscode'];
-    if (/\.dll$/i.test(executable)) {
-      const dotnetPath = vscode.workspace.getConfiguration('wpf').get<string>('dotnetPath', 'dotnet');
-      getOutputChannel().appendLine(`[Runtime] Using SharpDbg adapter via dotnet host: ${executable}`);
-      return new vscode.DebugAdapterExecutable(dotnetPath, [executable, ...args]);
-    }
-
-    getOutputChannel().appendLine(`[Runtime] Using SharpDbg adapter: ${executable}`);
-    return new vscode.DebugAdapterExecutable(executable, args);
-  }
-}
-
-function resolveSharpDbgExecutable(context: vscode.ExtensionContext): string | null {
-  const override = vscode.workspace.getConfiguration('wpf').get<string>('sharpDbgExecutable', '').trim();
-  if (override && fs.existsSync(override)) {
-    return override;
-  }
-
-  const candidates = [
-    path.join(context.extensionPath, 'tools', 'SharpDbg', 'SharpDbg.Cli.exe'),
-    path.join(context.extensionPath, 'tools', 'SharpDbg', 'SharpDbg.Cli.dll'),
-    path.join(context.extensionPath, 'external', 'SharpDbg', 'artifacts', 'bin', 'SharpDbg.Cli', 'debug', 'SharpDbg.Cli.exe'),
-    path.join(context.extensionPath, 'external', 'SharpDbg', 'artifacts', 'bin', 'SharpDbg.Cli', 'debug', 'SharpDbg.Cli.dll'),
-    path.join(context.extensionPath, 'external', 'SharpDbg', 'artifacts', 'bin', 'SharpDbg.Cli', 'Debug', 'net10.0', 'SharpDbg.Cli.exe'),
-    path.join(context.extensionPath, 'external', 'SharpDbg', 'artifacts', 'bin', 'SharpDbg.Cli', 'Debug', 'net10.0', 'SharpDbg.Cli.dll'),
-  ];
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
 async function ensureRuntimeHelperBuilt(): Promise<string | null> {
   if (!extensionPath) {
     return null;
@@ -499,110 +350,6 @@ async function ensureRuntimeHelperBuilt(): Promise<string | null> {
   return helperDll;
 }
 
-interface HotReloadResult {
-  success: boolean;
-  message: string;
-  pipeName?: string;
-}
-
-async function sendWpfHotReloadBootstrapRequest(
-  debugSession: vscode.DebugSession,
-  helperAssemblyPath: string
-): Promise<HotReloadResult> {
-  try {
-    const response = await debugSession.customRequest('vsCustomMessage', {
-      message: {
-        sourceId: 'wpfHotReload',
-        messageCode: 1000,
-        parameter1: helperAssemblyPath,
-      },
-    });
-
-    const parsedVsResponse = parseVsCustomMessageResponse(response);
-    if (parsedVsResponse) {
-      return parsedVsResponse;
-    }
-  } catch (err) {
-    getOutputChannel().appendLine(`[Runtime] vsCustomMessage bootstrap path failed, falling back: ${String(err)}`);
-  }
-
-  const fallbackResponse = await debugSession.customRequest('wpfHotReload/bootstrap', {
-    helperAssemblyPath,
-  });
-
-  return parseLegacyHotReloadResponse(fallbackResponse);
-}
-
-async function sendWpfHotReloadRequest(
-  debugSession: vscode.DebugSession,
-  helperAssemblyPath: string,
-  filePath: string,
-  xamlText: string
-): Promise<HotReloadResult> {
-  try {
-    const response = await debugSession.customRequest('vsCustomMessage', {
-      message: {
-        sourceId: 'wpfHotReload',
-        messageCode: 1001,
-        parameter1: helperAssemblyPath,
-        parameter2: filePath,
-        xamlText,
-      },
-    });
-
-    const parsedVsResponse = parseVsCustomMessageResponse(response);
-    if (parsedVsResponse) {
-      return parsedVsResponse;
-    }
-  } catch (err) {
-    getOutputChannel().appendLine(`[Runtime] vsCustomMessage path failed, falling back: ${String(err)}`);
-  }
-
-  const fallbackResponse = await debugSession.customRequest('wpfHotReload/applyXamlText', {
-    helperAssemblyPath,
-    filePath,
-    xamlText,
-  });
-
-  return parseLegacyHotReloadResponse(fallbackResponse);
-}
-
-function parseVsCustomMessageResponse(response: unknown): HotReloadResult | null {
-  const container = asRecord(response);
-  const responseMessage = asRecord(container?.responseMessage) ?? asRecord(asRecord(container?.body)?.responseMessage);
-  if (!responseMessage) {
-    return null;
-  }
-
-  const success = typeof responseMessage.parameter1 === 'boolean' ? responseMessage.parameter1 : false;
-  const message =
-    typeof responseMessage.parameter2 === 'string'
-      ? responseMessage.parameter2
-      : success
-        ? 'ok'
-        : 'unknown response';
-  const responseMessageAdditional = asRecord(responseMessage.additionalProperties)
-    ?? asRecord(responseMessage.AdditionalProperties);
-  const pipeName = readStringField(responseMessage, 'pipeName')
-    ?? readStringField(responseMessageAdditional ?? {}, 'pipeName')
-    ?? readStringField(asRecord(container?.body) ?? {}, 'pipeName')
-    ?? readStringField(asRecord(container?.responseMessage) ?? {}, 'pipeName');
-
-  return { success, message, pipeName };
-}
-
-function parseLegacyHotReloadResponse(response: unknown): HotReloadResult {
-  const body = asRecord(response);
-  const success = readBooleanField(body, 'success') ?? readBooleanField(asRecord(body?.body), 'success') ?? false;
-  const message = readStringField(body ?? {}, 'message')
-    ?? readStringField(asRecord(body?.body) ?? {}, 'message')
-    ?? (success ? 'ok' : 'unknown response');
-  const pipeName = readStringField(body ?? {}, 'pipeName')
-    ?? readStringField(asRecord(body?.body) ?? {}, 'pipeName');
-
-  return { success, message, pipeName };
-}
-
 function isRuntimeHelperUpToDate(projectPath: string, helperDllPath: string): boolean {
   if (!fs.existsSync(helperDllPath)) {
     return false;
@@ -639,30 +386,4 @@ function isRuntimeHelperUpToDate(projectPath: string, helperDllPath: string): bo
   }
 
   return true;
-}
-
-function getProjectPathFromSession(session: vscode.DebugSession): string | undefined {
-  return readStringField(session.configuration, 'projectPath');
-}
-
-function getXamlPathFromSession(session: vscode.DebugSession): string | undefined {
-  return readStringField(session.configuration, 'xamlPath');
-}
-
-function readStringField(source: Record<string, unknown>, key: string): string | undefined {
-  const value = source[key];
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function readBooleanField(source: Record<string, unknown> | undefined, key: string): boolean | undefined {
-  if (!source) {
-    return undefined;
-  }
-
-  const value = source[key];
-  return typeof value === 'boolean' ? value : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined;
 }

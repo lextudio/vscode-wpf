@@ -59,8 +59,8 @@
         }
       },
       {
-        "command": "wpf.debugHotReload",
-        "title": "WPF: Hot Reload (Debug)",
+        "command": "wpf.hotReload",
+        "title": "WPF: Hot Reload",
         "icon": {
           "light": "images/hot-reload.svg",
           "dark": "images/hot-reload.svg"
@@ -79,53 +79,6 @@
         "title": "WPF: Build Designer Tools"
       }
     ],
-    "debuggers": [
-      {
-        "type": "wpf-sharpdbg",
-        "label": "WPF SharpDbg",
-        "languages": [
-          "xaml",
-          "csharp"
-        ],
-        "configurationAttributes": {
-          "launch": {
-            "required": [
-              "program"
-            ],
-            "properties": {
-              "program": {
-                "type": "string",
-                "description": "Program to launch under SharpDbg."
-              },
-              "args": {
-                "type": "array",
-                "description": "Arguments passed to the launched program.",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "cwd": {
-                "type": "string",
-                "description": "Working directory used for the launched program."
-              },
-              "stopAtEntry": {
-                "type": "boolean",
-                "default": false,
-                "description": "Break immediately after launch."
-              },
-              "projectPath": {
-                "type": "string",
-                "description": "Associated WPF project path for the hot reload session."
-              },
-              "xamlPath": {
-                "type": "string",
-                "description": "Initial XAML document path associated with the session."
-              }
-            }
-          }
-        }
-      }
-    ],
     "languages": [
       {
         "id": "xaml",
@@ -141,7 +94,7 @@
     "menus": {
       "editor/title": [
         {
-          "command": "wpf.debugHotReload",
+          "command": "wpf.hotReload",
           "when": "resourceExtname == .xaml",
           "group": "navigation"
         },
@@ -153,7 +106,7 @@
       ],
       "commandPalette": [
         {
-          "command": "wpf.debugHotReload"
+          "command": "wpf.hotReload"
         },
         {
           "command": "wpf.previewXaml"
@@ -202,12 +155,7 @@
           "default": "Debug",
           "description": "MSBuild configuration used when building the WPF project (e.g. Debug, Release)."
         },
-        "wpf.sharpDbgExecutable": {
-          "type": "string",
-          "default": "",
-          "description": "Override path to SharpDbg.Cli.exe. Leave empty to use the bundled or submodule build output."
-        },
-        "wpf.designerTargetFramework": {
+"wpf.designerTargetFramework": {
           "type": "string",
           "default": "",
           "description": "Target framework used when building the XamlDesigner tool. Leave empty to auto-detect the highest .NET SDK installed on this machine (recommended). Override only when you need to pin to a specific version, e.g. net10.0-windows."

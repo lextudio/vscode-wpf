@@ -6,34 +6,38 @@ This extension integrates the [WpfDesigner](https://github.com/icsharpcode/WpfDe
 
 ## Latest Status (March 31, 2026)
 
-Runtime hot reload is now **runtime-first and push-based** and works in the main flow:
+Runtime hot reload is now **runtime-first, push-based, and debugger-free**. The WPF app is launched as a regular child process — VS Code does **not** enter debugging mode.
 
-1. Click `WPF: Hot Reload (Debug)` once to launch the real WPF app under SharpDbg.
-2. Edit XAML in VS Code.
-3. Click `WPF: Hot Reload (Debug)` again to push the current snapshot into the running app.
+1. Click `WPF: Hot Reload` once to launch the real WPF app (as a plain process, not a debug target).
+2. The app shows an **in-app overlay toolbar** indicating Hot Reload is connected.
+3. Edit XAML in VS Code.
+4. Click `WPF: Hot Reload` again to push the current snapshot into the running app.
 
 ### Implemented architecture updates
 
-- Added **SharpDbg** as a submodule-backed debugger path for runtime sessions.
-- Added a dedicated command/action: `WPF: Hot Reload (Debug)` (kept `WPF: Launch Designer` as fallback).
+- **Direct process launch** via `child_process.spawn()` — no VS Code debug session, no debug toolbar/sidebar.
+- Added a dedicated command/action: `WPF: Hot Reload` (kept `WPF: Launch Designer` as fallback).
 - Added startup-hook injection:
   - `DOTNET_STARTUP_HOOKS` points to `WpfHotReload.Runtime.dll`.
   - `WPF_HOTRELOAD_PIPE` carries a per-session named pipe.
-- Runtime helper now starts from startup hook and exposes a named-pipe command channel.
-- Extension now prefers the runtime pipe channel and only uses debugger bootstrap/eval as fallback.
+- Runtime helper starts from startup hook and exposes a named-pipe command channel.
+- Named pipe is the **only** runtime communication channel (no DAP/debugger fallback needed).
 - Runtime hot reload is **manual push**, not auto-apply-on-edit.
+- **In-app overlay toolbar** injected by the runtime helper shows Hot Reload status inside the WPF app.
 
 ### Important reliability fixes completed
 
-- Fixed SharpDbg launch env propagation issues that caused COM `ERROR_INVALID_PARAMETER` in app launch flow.
+- Removed dependency on debugger expression evaluation — startup hook + named pipe is fully self-contained.
 - Removed startup-hook behavior that touched WPF from unsafe startup-thread polling.
-- Added runtime pipe readiness probing (`agent.ready`) before fallback bootstrap.
+- Added runtime pipe readiness probing (`agent.ready`) before first apply.
 - Added parse diagnostics with exception type + inner exception text.
 - Added safe XML property-update fallback for common edits (e.g., `Background`, `Text`, `Margin`, `SelectedIndex`) to avoid parser-driven first-chance exception stalls.
 
 ### Current behavior summary
 
-- The app is launched as the real debug target (not a designer simulation).
+- The app is launched as a regular child process (not a debug target).
+- VS Code stays in normal editing mode — no debug UI is shown.
+- The running WPF app displays a small overlay toolbar indicating Hot Reload status.
 - Hot reload applies when the user explicitly pushes.
 - The `WPF Hot Reload` output channel shows session lifecycle and apply results.
 - WpfDesigner remains available as an optional backup path.
@@ -43,6 +47,7 @@ Runtime hot reload is now **runtime-first and push-based** and works in the main
 - Full structural XAML mutation still depends on parser/object-graph reconstruction and can fail on complex markup patterns.
 - Visual Studio-level parity (all edit shapes, perfect state retention, full EnC-style behavior) is not complete yet.
 - More end-to-end automation and richer live-instance mapping are still desirable.
+- Optional "dev server" process (like Uno/MAUI) for more robust lifecycle management is a future enhancement.
 
 ---
 
@@ -66,26 +71,52 @@ Runtime hot reload is now **runtime-first and push-based** and works in the main
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  VS Code Extension (TypeScript)                         │
-│                                                         │
-│  extension.ts          — activation, command wiring     │
-│  projectDiscovery.ts   — find .csproj/.sln, detect Kits │
-│  designerLauncher.ts   — build project, spawn designer  │
-│  statusBar.ts          — status bar item                │
-└───────────────────┬─────────────────────────────────────┘
-                    │  child_process.spawn()
-                    ▼
-┌─────────────────────────────────────────────────────────┐
-│  XamlDesigner.exe  (pre-built, lives in tools/)         │
-│  (from external/WpfDesigner/XamlDesigner)               │
-│                                                         │
-│  CLI:  XamlDesigner.exe <file.xaml> [assembly.dll ...]  │
-│  — Opens the XAML file for visual editing               │
-│  — DLL arguments are loaded into the Toolbox            │
-│  — Saves back to the original file on disk              │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  VS Code Extension (TypeScript)                              │
+│                                                              │
+│  extension.ts            — activation, command wiring        │
+│  runtimeHotReload.ts     — hot reload session + pipe comms   │
+│  projectDiscovery.ts     — find .csproj/.sln, detect Kits   │
+│  designerLauncher.ts     — build project, spawn designer     │
+│  statusBar.ts            — status bar item                   │
+└──────┬──────────────────────────────┬────────────────────────┘
+       │  child_process.spawn()       │  child_process.spawn()
+       │  (Hot Reload path)           │  (Designer path)
+       ▼                              ▼
+┌────────────────────────────┐  ┌──────────────────────────────┐
+│  User's WPF App (.exe)     │  │  XamlDesigner.exe            │
+│                            │  │  (pre-built, lives in tools/)│
+│  Env vars set at launch:   │  │                              │
+│  · DOTNET_STARTUP_HOOKS    │  │  CLI: XamlDesigner.exe       │
+│    → WpfHotReload.Runtime  │  │       <file.xaml> [dlls...]  │
+│  · WPF_HOTRELOAD_PIPE      │  │  — Visual XAML editing       │
+│    → named pipe name       │  │  — Saves back to disk        │
+│                            │  └──────────────────────────────┘
+│  ┌──────────────────────┐  │
+│  │ WpfHotReload.Runtime │  │
+│  │ (injected via hook)  │  │
+│  │                      │  │
+│  │ · Named pipe server  │  │
+│  │ · XAML apply engine  │  │
+│  │ · Overlay toolbar UI │  │
+│  └──────────┬───────────┘  │
+│             │ Dispatcher    │
+│             ▼               │
+│  ┌──────────────────────┐  │
+│  │ Live WPF UI          │  │
+│  │ (real app + overlay) │  │
+│  └──────────────────────┘  │
+└────────────────────────────┘
+       ▲
+       │  Named pipe (JSON lines)
+       │  \\.\pipe\wpf-hotreload-{UUID}
+       │
+  Extension sends:
+  · { filePath, xamlText }  → apply XAML
+  · { kind: "query" }      → probe readiness
 ```
+
+**Note:** VS Code does **not** enter debugging mode for hot reload. The WPF app is a plain child process. SharpDbg is available separately if the user wants actual debugging, but it is not part of the hot reload flow.
 
 ---
 
@@ -209,6 +240,7 @@ One designer process is kept alive **per project**. This avoids the startup over
 
 | Command ID              | Title                          | When visible                        |
 |-------------------------|--------------------------------|-------------------------------------|
+| `wpf.hotReload`         | WPF: Hot Reload                | Editor title bar, `.xaml` files     |
 | `wpf.previewXaml`       | WPF: Preview in Designer       | Editor title bar, `.xaml` files     |
 | `wpf.selectProject`     | WPF: Select Project            | Command palette                     |
 | `wpf.buildDesignerTools`| WPF: Build Designer Tools      | Command palette                     |
@@ -239,18 +271,25 @@ One designer process is kept alive **per project**. This avoids the startup over
 ```
 vscode-wpf/
 ├── src/
-│   ├── extension.ts          ← main activation + command wiring
-│   ├── projectDiscovery.ts   ← project/solution detection
-│   ├── designerLauncher.ts   ← build + spawn designer
-│   └── statusBar.ts          ← status bar item
+│   ├── extension.ts            ← main activation + command wiring
+│   ├── runtimeHotReload.ts     ← hot reload session, process launch, pipe communication
+│   ├── projectDiscovery.ts     ← project/solution detection, launch target resolution
+│   ├── designerLauncher.ts     ← build + spawn designer
+│   ├── statusBar.ts            ← status bar item
+│   └── WpfHotReload.Runtime/   ← .NET startup hook helper (injected into WPF app)
+│       ├── StartupHook.cs      ← DOTNET_STARTUP_HOOKS entry point
+│       └── WpfHotReloadAgent.cs← named pipe server, XAML apply engine, overlay toolbar
 ├── tools/
-│   └── XamlDesigner/         ← pre-built designer binaries (VSIX-included)
-│       └── XamlDesigner.exe
+│   ├── XamlDesigner/           ← pre-built designer binaries (VSIX-included)
+│   │   └── XamlDesigner.exe
+│   └── WpfHotReload.Runtime/   ← built helper DLL (VSIX-included)
+│       └── WpfHotReload.Runtime.dll
 ├── scripts/
-│   └── build-designer.ps1    ← builds WpfDesigner submodule → tools/
+│   └── build-designer.ps1      ← builds WpfDesigner submodule → tools/
 ├── external/
-│   └── WpfDesigner/          ← submodule (source only, not in VSIX)
-└── sample/                   ← sample WPF project for manual testing
+│   ├── WpfDesigner/            ← submodule (source only, not in VSIX)
+│   └── SharpDbg/               ← submodule (optional, for separate debugging)
+└── sample/                     ← sample WPF project for manual testing
 ```
 
 ---
@@ -260,6 +299,7 @@ vscode-wpf/
 ### Commands
 
 ```json
+{ "command": "wpf.hotReload",           "title": "WPF: Hot Reload",          "icon": "$(flame)" },
 { "command": "wpf.previewXaml",        "title": "WPF: Preview in Designer", "icon": "$(open-preview)" },
 { "command": "wpf.selectProject",       "title": "WPF: Select Project" },
 { "command": "wpf.buildDesignerTools",  "title": "WPF: Build Designer Tools" }
@@ -632,25 +672,24 @@ This matches the best part of AXSG’s live tooling model: the editor can move t
 
 ### Positioning
 
-The earlier strategy was still too designer-centric. If the goal is to behave like Visual Studio, the primary host should be the **actual WPF app running under the debugger**, not a separate visual designer process.
+The earlier strategy was still too designer-centric. The primary host should be the **actual WPF app**, not a separate visual designer process and not a VS Code debug session.
 
-That means the system should distinguish between:
+The system now follows the **Uno/MAUI dev-server model**: the IDE launches the app as a plain process, injects a runtime helper via startup hook, and communicates over a named pipe. VS Code stays in normal editing mode — no debug toolbar, no call stack panel, no debug sidebar.
 
-- **runtime hot reload** against the real app
-- **runtime inspection** of the live visual tree
-- **optional design fallback** when no debuggee is available
+That means the system distinguishes between:
 
-The runtime path should be the default product experience. A separate visual designer can still exist, but only as a backup path for non-debug scenarios.
+- **runtime hot reload** against the real app (primary path, no debugger)
+- **runtime inspection** of the live visual tree (future)
+- **optional design fallback** when no app is running
 
-The cleanest design is to let each imported component own one job:
+Each imported component owns one job:
 
 - **AXSG / XSG** owns semantic analysis, edit classification, and "is this safe to apply live?" decisions.
-- **SharpDbg** owns process attach/launch, runtime state inspection, breakpoint coordination, and instance targeting when a real app is running.
+- **WpfHotReload.Runtime** (startup hook helper) owns the in-process named pipe listener, XAML apply engine, and in-app overlay toolbar.
 - **The actual WPF app** owns rendering, layout, bindings, resources, and real runtime behavior.
 - **WpfDesigner** becomes an optional fallback for design-time inspection or editing, not the primary live-preview host.
-- **The VS Code extension** remains the orchestrator and session manager.
-
-This gives us a layered system that behaves much more like Visual Studio because the preview is no longer an approximation of the app. It is the app.
+- **The VS Code extension** remains the orchestrator, session manager, and pipe client.
+- **SharpDbg** is available as a separate opt-in debugging tool, decoupled from the hot reload flow.
 
 ### Recommended architecture
 
@@ -663,39 +702,41 @@ Used for the normal hot reload experience.
 Host:
 
 - the user's actual WPF process
-- launched or attached through SharpDbg
+- launched via `child_process.spawn()` with startup hook env vars
 
 Backed by:
 
 - the real application state
-- unsaved XAML text streamed from the editor
-- a runtime-side helper assembly for safe apply operations
+- unsaved XAML text streamed from the editor via named pipe
+- the `WpfHotReload.Runtime` helper assembly (injected via `DOTNET_STARTUP_HOOKS`)
 
 Purpose:
 
 - apply supported edits directly to the running app
 - preserve real bindings/resources/control behavior
-- inspect live windows and visual trees
+- show in-app overlay toolbar with hot reload status
 - keep the last known good applied state when an edit is temporarily invalid
 
-#### 2. Debug coordination session
+#### 2. Extension coordination session
 
-Used by the extension as the source of truth around the debugger and workspace.
+Used by the extension as the source of truth around the workspace and hot reload state.
 
 Owned by:
 
 - the VS Code extension
-- the WPF language server
-- SharpDbg-backed debug session state
+- the WPF language server (when available)
 
 Tracks:
 
 - workspace/project context
 - open XAML documents
 - build baseline stamp
-- debugger state
+- child process lifecycle (pid, exit events)
+- pipe name and readiness state
 - current active runtime target
 - last known good document text
+
+Note: This session does **not** depend on a VS Code debug session. The extension manages the child process directly.
 
 #### 3. Design fallback session
 
@@ -713,20 +754,13 @@ Purpose:
 
 This should be treated as a secondary path, not the default hot reload story.
 
-### Why SharpDbg should be part of the design
+### SharpDbg's role (optional, separate from hot reload)
 
-SharpDbg should be part of the primary path because the feature is now fundamentally debugger-driven.
+SharpDbg is **no longer part of the hot reload path**. Hot reload uses direct process launch + startup hook + named pipe, with no debugger involved.
 
-SharpDbg is valuable for four specific jobs:
+SharpDbg remains available as a **separate debugging tool** for users who want breakpoints, call stacks, and variable inspection. It can coexist with hot reload (a user could debug the app separately), but hot reload does not depend on it.
 
-- detect whether the target process is stopped, running, or broken
-- locate candidate live roots for a XAML document
-- inspect runtime object identity so edits are applied to the correct window/control tree
-- coordinate safe apply points during debugging
-
-In other words, SharpDbg should be the **runtime authority**.
-
-That distinction matters. The hot reload loop should not depend on WpfDesigner being present. If the app is running under debug, changes should flow straight to the debuggee. If no app is running, only then should we consider a fallback design surface.
+If future features need debugger-level inspection (e.g., live visual tree with object identity, runtime type resolution), SharpDbg could be reintroduced as an optional enhancement. But the core hot reload flow must always work without it.
 
 ### Why AXSG / XSG should be central
 
@@ -770,43 +804,43 @@ The product should expose explicit internal modes even if the UI keeps them most
 
 | Mode | Backing host | Primary use |
 |---|---|---|
-| `runtimeHotReload` | Debuggee + SharpDbg | Default path for applying supported edits to the real app |
-| `runtimeInspect` | Debuggee + SharpDbg | Live visual tree and object inspection |
+| `runtimeHotReload` | WPF app (child process) + startup hook helper | Default path for applying supported edits to the real app |
+| `runtimeInspect` | WPF app + startup hook helper | Live visual tree and object inspection (future) |
 | `designFallback` | WpfDesigner | Secondary path when no runtime session exists |
 
-This avoids the main failure mode: trying to make a designer impersonate the actual app.
+This avoids two failure modes: trying to make a designer impersonate the actual app, and forcing the user into debug mode just for hot reload.
 
 ### Transport design
 
-The current pipe protocol is still useful, but it should no longer be the center of the hot reload architecture.
+The named pipe is the **sole** runtime communication channel for hot reload. There is no DAP dependency.
 
-We should split transport into two channels.
-
-#### Runtime control channel
+#### Runtime control channel (named pipe)
 
 Transport:
 
-- DAP + a small runtime-side command bridge
+- `\\.\pipe\wpf-hotreload-{UUID}` — created by the startup hook helper inside the WPF app
+
+Protocol:
+
+- JSON lines over byte-mode named pipe (UTF-8, newline-delimited)
+- One connection per request (server loops accepting new connections)
 
 Commands:
 
-- `applyXamlText`
-- `applyScopedPatch`
-- `reloadResourceDictionary`
-- `enumerateRoots`
-- `resolveDocumentRoot`
-- `getLiveVisualTree`
-- `inspectObject`
-- `selectObject`
-- `ping`
-
-Important: DAP itself should remain the debugging protocol. We should add a **small companion command surface** for WPF-specific live update operations.
+- `applyXamlText` — push XAML text to be applied to the live UI
+- `applyScopedPatch` — apply a targeted property/subtree update (future)
+- `reloadResourceDictionary` — reload resource scope without full window replace (future)
+- `enumerateRoots` — list live window/page instances (future)
+- `resolveDocumentRoot` — map a XAML file to a live UI root (future)
+- `getLiveVisualTree` — inspect the running visual tree (future)
+- `query` — probe readiness (`agent.ready`) and element state
+- `ping` — liveness check
 
 #### Optional designer channel
 
 Transport:
 
-- named pipe
+- separate named pipe (`XamlDesigner-<timestamp>`)
 
 Commands:
 
@@ -817,19 +851,69 @@ Commands:
 - `setProperty`
 - `serializeDocument`
 
-### Runtime helper design
+### Runtime helper design (`WpfHotReload.Runtime`)
 
-To get close to Visual Studio behavior, the runtime session likely needs a small helper assembly loaded into the app during debug sessions.
+The runtime helper is injected into the WPF app via `DOTNET_STARTUP_HOOKS` — no debugger needed.
 
 Responsibilities:
 
-- hold a registry of live roots by type/x:Class/source file hint
-- provide safe dispatcher-marshalled apply operations
-- rebuild a subtree from XAML when the edit can be scoped locally
-- reload resource dictionaries without replacing the whole window when possible
-- emit structured apply results back to the extension
+- **Named pipe server** — listen on `WPF_HOTRELOAD_PIPE` for commands from the extension
+- **XAML apply engine** — parse incoming XAML, match to live UI roots, apply property/subtree updates on the Dispatcher thread
+- **Live root registry** — hold a registry of live roots by type/x:Class/source file hint
+- **In-app overlay toolbar** — show a floating UI indicator inside the WPF app with hot reload status (connected, applying, applied, error)
+- **Safe dispatcher marshalling** — all UI mutations go through `Dispatcher.Invoke`
+- **Subtree rebuild** — rebuild a subtree from XAML when the edit can be scoped locally
+- **Resource dictionary reload** — reload resource dictionaries without replacing the whole window when possible
+- **Structured results** — emit apply results (success/error) back to the extension over the pipe
 
-This helper is what lets SharpDbg stay focused on debugging instead of also becoming a WPF mutation library.
+### In-App Hot Reload Overlay Toolbar
+
+The WPF app should display a small floating overlay toolbar when hot reload is active, similar to the overlays used by Uno Platform and .NET MAUI. This gives the user immediate visual feedback without needing to look at VS Code.
+
+#### Appearance
+
+- A small semi-transparent bar anchored to the **top center** of the main window.
+- Default height: ~28px. Unobtrusive but visible.
+- Contains: a status icon, a short status label, and a collapse/dismiss button.
+- Uses a neutral dark theme (semi-transparent dark background, light text) to avoid clashing with the app's own theme.
+
+#### States
+
+| State | Icon | Label | Color |
+|---|---|---|---|
+| Connected / Idle | 🔥 | `Hot Reload` | Neutral (gray) |
+| Applying | ⟳ | `Applying…` | Blue |
+| Applied successfully | ✓ | `Updated` | Green (fades back to Idle after 2s) |
+| Apply failed | ✗ | `Error` | Red (stays until next apply or dismiss) |
+| Disconnected | ○ | `Disconnected` | Yellow/dim |
+
+#### Behavior
+
+- **Injected by the startup hook**: when `WpfHotReloadAgent` detects `Application.Current` and the main window, it creates the overlay on the Dispatcher thread.
+- **Non-intrusive**: uses a WPF `Adorner` on the main window's root `AdornerLayer`, or a top-level `Popup` if the adorner layer is unavailable. The overlay does not modify the app's logical tree or interfere with layout.
+- **Dismissible**: the user can collapse the toolbar to a minimal icon. The collapsed state persists for the session.
+- **Updates on each apply**: the agent updates the overlay status from the pipe listener's apply result callback.
+- **Auto-hides on disconnect**: if the pipe listener stops (extension disconnected, pipe broken), the overlay shows "Disconnected" briefly and then fades out.
+- **Does not capture input**: the overlay should be hit-test transparent for mouse events on the app content below it, except for the collapse/dismiss button itself.
+
+#### Implementation in `WpfHotReloadAgent`
+
+The overlay is created and managed inside the runtime helper assembly. Rough structure:
+
+```csharp
+// Called once after Application.Current and MainWindow are available
+void InjectOverlayToolbar(Window mainWindow)
+{
+    // Create a lightweight overlay UserControl or Border
+    // Attach it as an Adorner on the window's root AdornerLayer
+    // Expose UpdateStatus(OverlayState state, string message) for the pipe listener
+}
+```
+
+The pipe listener calls `UpdateStatus()` after each apply operation:
+- Before apply: `UpdateStatus(Applying, "Applying…")`
+- On success: `UpdateStatus(Applied, "Updated")` → auto-revert to Idle after 2s
+- On error: `UpdateStatus(Error, exceptionMessage)`
 
 ### WpfDesigner reuse opportunities
 
@@ -855,7 +939,7 @@ The extension should not ask "can I hot reload?" in a binary way. It should clas
 | `resource-only` | Runtime | Reload resource scope |
 | `requires-subtree-rebuild` | Runtime helper | Recreate affected subtree |
 | `requires-assembly-rebuild` | Build pipeline | Rebuild before next apply |
-| `requires-process-restart` | Debugger flow | Notify user and offer restart |
+| `requires-process-restart` | Extension (relaunch app) | Notify user and offer restart |
 
 This is closer to how users think about hot reload: sometimes it works instantly, sometimes it waits, sometimes it asks for rebuild, and sometimes it cannot continue.
 
@@ -873,11 +957,11 @@ We should not rely on file path alone. Instead, mapping should use a chain of si
 
 If multiple runtime instances match, the extension should prefer:
 
-- selected debuggee window
 - active/focused window
+- most recently created window
 - explicit picker as fallback
 
-This is the main place where SharpDbg materially improves the experience over a preview-only tool.
+The runtime helper's live root registry is what enables this mapping without needing a debugger.
 
 ### Interaction with save/build/debug
 
@@ -888,7 +972,7 @@ The desired flow should be:
 3. If `runtimeHotReload` is active and the edit is supported, the running app updates immediately.
 4. If the edit crosses a rebuild boundary, the extension marks the session stale instead of eagerly rebuilding.
 5. Save or explicit refresh can trigger a rebuild when needed.
-6. If code-behind/custom type shape changed, the debugger session is told that restart or rebuild is required.
+6. If code-behind/custom type shape changed, the extension notifies the user that a rebuild and app relaunch is required.
 7. If no runtime session exists, optional fallback tooling may offer designer-only inspection.
 
 This keeps the common path fast while still being honest about WPF's real constraints.
@@ -897,13 +981,15 @@ This keeps the common path fast while still being honest about WPF's real constr
 
 The safest sequence is:
 
-1. Launch the real WPF app through **SharpDbg** from the extension.
-2. Add **AXSG-driven edit classification** and stale-state tracking.
-3. Add a **runtime helper assembly** for safe UI-thread apply operations.
-4. Implement **runtime XAML patch application** for the safe subset.
-5. Add **visual tree inspection and selection mapping** from the live app.
-6. Add **resource dictionary and subtree rebuild** support.
-7. Add **designer fallback** only after the runtime-first path is solid.
+1. **Direct process launch** — replace `vscode.debug.startDebugging()` with `child_process.spawn()` so VS Code stays in normal editing mode. *(done)*
+2. **Startup hook + named pipe** — inject `WpfHotReload.Runtime` via `DOTNET_STARTUP_HOOKS`, communicate over named pipe. *(done)*
+3. **Runtime XAML patch application** for the safe subset. *(done)*
+4. **In-app overlay toolbar** — show hot reload status inside the WPF app (like Uno/MAUI). *(next)*
+5. Add **AXSG-driven edit classification** and stale-state tracking.
+6. Add **visual tree inspection and selection mapping** from the live app.
+7. Add **resource dictionary and subtree rebuild** support.
+8. Optionally add a **dev server process** (like Uno's `dotnet-dsrouter`) for more robust lifecycle management.
+9. Add **designer fallback** only after the runtime-first path is solid.
 
 This order delivers user value early and avoids blocking on the hardest runtime problems before we have a solid design loop.
 
@@ -917,226 +1003,64 @@ Not a v1 goal:
 - reliable live mutation for every possible custom control pattern
 - full BAML-compatible runtime patching
 - rehosting all of Visual Studio's private WPF designer/debugger behavior
+- requiring a debugger for hot reload
 
 Instead, v1 should target:
 
-- launching/debugging the real WPF app
-- unsaved XAML updates into the real app
+- launching the real WPF app as a plain process (no debug mode)
+- unsaved XAML updates into the real app via named pipe
+- in-app overlay toolbar showing hot reload status
 - last-known-good runtime continuity
 - supported runtime XAML patching for common layout/property/resource edits
 - clear fallback when rebuild or restart is necessary
 
 ### Decision
 
-The best design is a **runtime-first model**:
+The best design is a **runtime-first, debugger-free model**:
 
-- **the actual WPF app + SharpDbg + runtime helper** for live hot reload
+- **the actual WPF app + startup hook helper + named pipe** for live hot reload
+- **In-app overlay toolbar** for visual hot reload status (like Uno/MAUI)
 - **AXSG** as the semantic control plane that decides which path is legal for each edit
 - **WpfDesigner** only as an optional fallback or source of reusable inspection/editing pieces
+- **SharpDbg** available separately for debugging, but decoupled from hot reload
 
-That should get us much closer to "works like Visual Studio" because the hot reload target is the app the user is actually running.
+VS Code stays in normal editing mode. The user sees hot reload status in the app itself, not in the debug toolbar.
 
 ---
 
-## Current Runtime Hot Reload Blocker
+## Historical Note: Debugger-Based Hot Reload (Superseded)
 
-### Current user-visible behavior
+Early prototypes used SharpDbg to launch the WPF app as a VS Code debug target and applied XAML updates via debugger expression evaluation. This approach was unreliable because:
 
-The current runtime-first prototype can:
+- Forced pauses often landed in unmanaged/native code with no usable managed IL frame
+- `ApplyWpfHotReload(...)` would fail with `error: no stack frame available for evaluation`
+- The approach was fundamentally dependent on "whatever stack frame happened to be active when the user clicked the button"
 
-- launch the real WPF app under SharpDbg
-- keep a runtime hot reload session associated with the project
-- accept an explicit "push" gesture from the Hot Reload command
-- route a XAML document plus helper assembly path into SharpDbg
+The solution was to **remove the debugger dependency entirely** for hot reload by using `DOTNET_STARTUP_HOOKS` to inject the runtime helper before `Main()` runs, and communicate over a named pipe. This is now the only hot reload path.
 
-However, runtime apply is still failing in normal interactive use.
-
-Observed output:
-
-```text
-[Runtime] Manual hot reload requested for ...\MainWindow.xaml
-[Runtime] Hot reload rejected for ...\MainWindow.xaml: error: no stack frame available for evaluation
-```
-
-### What this error means
-
-The failure is not in command routing anymore. The extension is reaching SharpDbg and SharpDbg is attempting to run the WPF hot reload helper inside the debuggee.
-
-The rejection happens because SharpDbg currently requires a usable managed IL stack frame in order to evaluate:
-
-- helper assembly load
-- helper method invocation
-
-If the app is running and we force a pause at the wrong moment, the debugger may stop:
-
-- in native or unmanaged code
-- in a state where the active frame is not a managed IL frame
-- before SharpDbg has a usable evaluation frame reference
-
-When that happens, `ApplyWpfHotReload(...)` returns:
-
-`error: no stack frame available for evaluation`
-
-### Why this is still a design problem
-
-This exposes a deeper issue in the current design:
-
-- hot reload is implemented as debugger-time expression evaluation
-- expression evaluation needs a stable managed frame
-- a generic "pause now and evaluate" flow is not reliable enough for arbitrary runtime moments
-
-In other words, the current approach is still too dependent on where the debugger happened to stop, instead of owning a deterministic runtime control point.
-
-### What has already been tried
-
-We already changed the UX to a push model:
-
-- runtime edits are no longer auto-applied on every text change
-- the Hot Reload button starts the session on first click
-- clicking it again pushes the current XAML snapshot
-
-We also hardened SharpDbg in several ways:
-
-- custom WPF hot reload requests are supported over `vsCustomMessage`
-- helper assembly loading/invocation works in the adapter path
-- fallback frame discovery now tries more than the cached top frame
-- additional runtime logging was added so failures show in the `WPF Hot Reload` output channel
-
-Even with those improvements, the manual runtime push still fails in real use because the system still does not always have a valid managed evaluation frame when the user asks for apply.
-
-### Likely root causes
-
-The most likely causes are:
-
-1. The forced pause often lands in unmanaged/native runtime code rather than a managed WPF frame.
-2. The best evaluation target is not necessarily the currently active frame.
-3. Expression evaluation is the wrong primitive for reliable runtime mutation at arbitrary moments.
-4. We may need a stable runtime-side control point rather than opportunistic debugger evaluation.
-
-### Design implications
-
-This suggests the next design iteration should seriously consider one of these directions:
-
-1. Establish a deterministic managed rendezvous point in the debuggee.
-   Example: a helper-owned dispatcher callback or polling bridge that is always reachable from managed code.
-
-2. Move away from "find any stack frame and evaluate now" as the primary apply mechanism.
-   Example: enqueue apply work into the app and let the app execute it on the UI thread when safe.
-
-3. Preserve debugger evaluation only as a bootstrap path.
-   Example: load/register the helper once, then communicate with it through a more stable runtime channel.
-
-4. Make runtime hot reload depend on an explicit stopped state only.
-   This would be simpler, but it is a worse UX and does not really match Visual Studio.
-
-### Current conclusion
-
-The prototype has proven that:
-
-- the extension can launch the real app under SharpDbg
-- XAML payloads can be sent through the debugger path
-- a runtime helper can mutate live WPF content when evaluation succeeds
-
-But it has **not** yet proven a reliable always-available apply mechanism for normal "click hot reload while the app is running" usage.
-
-That is the main open problem now.
-## Current Runtime Hot Reload Blocker
-
-The latest prototype still does not reliably support the intended user flow: click `Hot Reload (Debug)` while the real WPF app is running, and have the changed XAML applied immediately to that live app.
-
-### Current user-visible failure
-
-The current runtime path reaches SharpDbg, but the apply step can still fail with:
-
-`error: no stack frame available for evaluation`
-
-In the `WPF Hot Reload` output channel this appears after a manual push such as:
-
-- `[Runtime] Manual hot reload requested for ...\MainWindow.xaml`
-- `[Runtime] Hot reload rejected for ...\MainWindow.xaml: error: no stack frame available for evaluation`
-
-### What this means technically
-
-The current implementation still depends on SharpDbg pausing the target process and evaluating helper code inside the debuggee. That evaluation currently requires a usable managed IL stack frame.
-
-When the forced pause lands at the wrong moment, SharpDbg may stop:
-
-- in native runtime code
-- in an unmanaged frame
-- in a place where no suitable managed IL frame is currently exposed for evaluation
-
-So even though the transport, command routing, helper assembly, and basic apply logic all exist, the runtime apply can still fail because the debugger does not have a reliable evaluation context at the exact moment the user clicks the button.
-
-### Why this matters
-
-This is not just a small bug. It points to a weakness in the current architecture:
-
-- we can send the XAML payload correctly
-- we can load and invoke a helper when evaluation is available
-- but the act of applying the update is still tied to opportunistic debugger expression evaluation
-
-That means the system is not yet robust enough for the intended push-model UX.
-
-### What has already been improved
-
-A number of things are already working better than before:
-
-- The runtime flow is now push-based rather than auto-applying on every text edit.
-- The extension can launch the real WPF app under SharpDbg.
-- The hot reload command now logs clearly to the `WPF Hot Reload` output channel.
-- SharpDbg can accept the custom runtime message path used for hot reload.
-- The runtime helper can update live WPF content when evaluation succeeds.
-- SharpDbg was already hardened to search more broadly for fallback managed frames.
-
-So the current problem is no longer command plumbing or XAML transport. It is the reliability of the final "apply inside the debuggee" step.
-
-### Current design takeaway
-
-The main open question is whether debugger expression evaluation should remain the primary apply mechanism.
-
-Right now, the evidence suggests we may need a more deterministic runtime control point, for example:
-
-1. Bootstrap a helper into the process once through the debugger.
-2. Let that helper stay resident and expose a stable runtime-side apply path.
-3. Have hot reload requests delivered to that runtime component on the UI thread when safe.
-
-That would reduce the dependency on "whatever stack frame happened to be active when the user clicked the button."
-
-### Present conclusion
-
-The prototype has proven that runtime-first WPF hot reload is feasible, but it has not yet proven that SharpDbg-driven apply is reliable enough in its current form for normal user workflow.
-
-The current blocker is therefore:
-
-`How do we make runtime apply deterministic, instead of depending on an arbitrary managed evaluation frame being available at click time?`
-
-### DOTNET_STARTUP_HOOKS injection architecture (implemented)
-
-The blocker above has been addressed by removing the dependency on debugger expression evaluation entirely for the primary hot reload path.
+## DOTNET_STARTUP_HOOKS Injection Architecture (Implemented)
 
 **How it works**
 
-1. Before launching the WPF app under SharpDbg, the extension builds the `WpfHotReload.Runtime` helper DLL and generates a unique pipe name (UUID-based).
+1. The extension builds the `WpfHotReload.Runtime` helper DLL and generates a unique pipe name (UUID-based).
 
-2. The extension passes two environment variables in the debug launch configuration:
+2. The extension spawns the WPF app as a plain child process with two environment variables:
    - `DOTNET_STARTUP_HOOKS` → path to `WpfHotReload.Runtime.dll`
    - `WPF_HOTRELOAD_PIPE` → the generated pipe name
 
-3. SharpDbg's launch handler now builds a Win32 environment block from the `env` config and passes it to `DbgShim.CreateProcessForLaunch` (previously this was a TODO).
+3. When the .NET runtime starts, it calls `StartupHook.Initialize()` from the helper assembly. This starts a background thread that polls for `Application.Current` to become available.
 
-4. When the .NET runtime starts, it calls `StartupHook.Initialize()` from the helper assembly. This starts a background thread that polls for `Application.Current` to become available.
+4. Once the WPF Application exists, the background thread:
+   - Starts a `NamedPipeServerStream` listener using the pipe name from the env var.
+   - Injects the in-app overlay toolbar into the main window.
 
-5. Once the WPF Application exists, the background thread starts a `NamedPipeServerStream` listener using the pipe name from the env var.
-
-6. When the user clicks Hot Reload, the extension connects to `\\.\pipe\{pipeName}`, sends a JSON line with `filePath` and `xamlText`, and reads back the result. The pipe listener dispatches to the UI thread via `Dispatcher.Invoke` for safe visual tree mutation.
+5. When the user clicks Hot Reload, the extension connects to `\\.\pipe\{pipeName}`, sends a JSON line with `filePath` and `xamlText`, and reads back the result. The pipe listener dispatches to the UI thread via `Dispatcher.Invoke` for safe visual tree mutation.
 
 **Why this works**
 
-- No debugger expression evaluation is needed. The helper is loaded by the runtime itself, before any debugging interaction.
-- Thread creation happens in normal managed code (the startup hook's background thread), not in a constrained debugger eval context.
+- No debugger needed. The helper is loaded by the runtime itself, before any application code runs.
+- VS Code stays in normal editing mode — no debug toolbar, sidebar, or call stack.
+- Thread creation happens in normal managed code (the startup hook's background thread).
 - The pipe listener is ready before the user ever clicks Hot Reload, so there is no first-request delay.
 - The pipe name is known to both sides because the extension generated it and passed it via env var.
-
-**Fallback**
-
-The DAP-based debugger evaluation path (`ApplyWpfHotReload`) is preserved as a fallback. If the pipe is not available (e.g., the startup hook failed), the extension falls back to the existing eval-based apply. This path can still fail with `error: no stack frame available for evaluation`, but it serves as a safety net for edge cases.
+- The in-app overlay toolbar gives the user immediate visual feedback inside the running app.

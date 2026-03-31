@@ -268,7 +268,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Command: wpf.selectProject
   // -------------------------------------------------------------------------
   context.subscriptions.push(
-    vscode.commands.registerCommand('wpf.debugHotReload', async (uri?: vscode.Uri) => {
+    vscode.commands.registerCommand('wpf.hotReload', async (uri?: vscode.Uri) => {
       const resource = uri ?? vscode.window.activeTextEditor?.document?.uri;
       if (!resource) {
         vscode.window.showWarningMessage('No XAML file is currently open.');
@@ -378,7 +378,7 @@ export function activate(context: vscode.ExtensionContext): void {
         projectPath: info.projectPath,
         xamlPath: info.xamlPath,
         pipeName: info.pipeName ?? null,
-        debugSessionId: info.debugSession.id,
+        pid: info.childProcess.pid ?? null,
       };
     })
   );

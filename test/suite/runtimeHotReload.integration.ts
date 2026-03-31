@@ -8,7 +8,7 @@ type RuntimeSessionInfo = {
   projectPath: string;
   xamlPath: string | null;
   pipeName: string | null;
-  debugSessionId: string;
+  pid: number | null;
 };
 
 type PipeResponse = {
@@ -52,10 +52,10 @@ export async function run(): Promise<void> {
 
   try {
     await vscode.window.showTextDocument(editor.document, { preview: false });
-    await vscode.commands.executeCommand('wpf.debugHotReload', editor.document.uri);
+    await vscode.commands.executeCommand('wpf.hotReload', editor.document.uri);
 
     const sessionInfo = await waitForRuntimeSession(sampleProjectPath);
-    await vscode.commands.executeCommand('wpf.debugHotReload', editor.document.uri);
+    await vscode.commands.executeCommand('wpf.hotReload', editor.document.uri);
     await waitForPipe(sessionInfo.pipeName);
 
     const initialBackground = await queryPipeValue(sessionInfo.pipeName, 'PrimaryButton.Background');
@@ -73,7 +73,7 @@ export async function run(): Promise<void> {
     });
     await editor.document.save();
 
-    await vscode.commands.executeCommand('wpf.debugHotReload', editor.document.uri);
+    await vscode.commands.executeCommand('wpf.hotReload', editor.document.uri);
 
     const updatedBackground = await waitForProbeValue(sessionInfo.pipeName, 'PrimaryButton.Background', '#FF008000');
     assert.strictEqual(updatedBackground, '#FF008000', `Expected hot reload to turn the button green, got ${updatedBackground ?? '(null)'}.`);
@@ -88,7 +88,7 @@ export async function run(): Promise<void> {
     });
     await paneEditor.document.save();
 
-    await vscode.commands.executeCommand('wpf.debugHotReload', paneEditor.document.uri);
+    await vscode.commands.executeCommand('wpf.hotReload', paneEditor.document.uri);
 
     assert.strictEqual(
       await waitForProbeValue(sessionInfo.pipeName, 'PaneTitle.Text', 'Sample pane updated by integration test'),
