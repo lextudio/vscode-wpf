@@ -171,11 +171,6 @@
           "type": "webview",
           "id": "wpf.toolbox",
           "name": "WPF Toolbox"
-        },
-        {
-          "type": "webview",
-          "id": "wpf.propertyGrid",
-          "name": "WPF Property Grid"
         }
       ]
     },

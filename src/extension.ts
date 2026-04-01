@@ -149,6 +149,15 @@ export function activate(context: vscode.ExtensionContext): void {
         };
       }
 
+      // Ensure edits in the current XAML document are applied to the running app
+      // before we capture the next preview frame.
+      try {
+        const latestXaml = await vscode.workspace.openTextDocument(vscode.Uri.file(contextResult.xamlPath));
+        await pushRuntimeXamlUpdate(contextResult.projectPath, contextResult.xamlPath, latestXaml.getText());
+      } catch {
+        // Best-effort push; capture still proceeds so preview remains usable.
+      }
+
       const frame = await captureRuntimePreview(contextResult.projectPath, contextResult.xamlPath);
       if (!frame) {
         return {
@@ -367,6 +376,29 @@ export function activate(context: vscode.ExtensionContext): void {
         message: autoPush
           ? applyResult.message
           : `${applyResult.message} Click "WPF: Hot Reload" to push to the running app.`,
+      };
+    },
+    async (elementName, typeName, deltaX, deltaY) => {
+      const contextResult = await resolveLivePreviewContext();
+      if (!contextResult.ok) {
+        return {
+          ok: false as const,
+          message: contextResult.message,
+        };
+      }
+
+      const moveResult = await applyLivePreviewCanvasMove(
+        contextResult.xamlPath,
+        elementName,
+        typeName,
+        deltaX,
+        deltaY,
+        contextResult.projectPath
+      );
+
+      return {
+        ok: moveResult.ok as true | false,
+        message: moveResult.message,
       };
     },
     async (xNorm, yNorm, item, autoPush) => {
@@ -810,7 +842,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('wpf.openLivePreview', async () => {
+      const alreadyOpen = livePreviewPanel.isOpen();
       livePreviewPanel.open();
+      if (alreadyOpen) {
+        await livePreviewPanel.refresh('manual');
+      }
     })
   );
 
@@ -1463,6 +1499,92 @@ async function applyLivePreviewPropertyEdit(
       ? `Updated ${resolvedProperty} and pushed hot reload.`
       : `Updated ${resolvedProperty} on selected element.`,
   };
+}
+
+async function applyLivePreviewCanvasMove(
+  xamlPath: string,
+  elementName: string,
+  typeName: string,
+  deltaX: number,
+  deltaY: number,
+  projectPath: string
+): Promise<{ ok: true; message: string } | { ok: false; message: string }> {
+  if (!elementName || elementName.trim().length === 0) {
+    return {
+      ok: false,
+      message: 'Direct move requires a uniquely named element.',
+    };
+  }
+
+  const uri = vscode.Uri.file(xamlPath);
+  const document = await vscode.workspace.openTextDocument(uri);
+  const text = document.getText();
+  const tagMatch = findTargetOpeningTag(text, elementName, typeName);
+  if (!tagMatch) {
+    return {
+      ok: false,
+      message: 'Could not map selection to a unique XAML element for move.',
+    };
+  }
+
+  const leftMatch = /\bCanvas\.Left\s*=\s*["']([^"']*)["']/.exec(tagMatch.tagText);
+  const topMatch = /\bCanvas\.Top\s*=\s*["']([^"']*)["']/.exec(tagMatch.tagText);
+  const currentLeft = Number.parseFloat(leftMatch?.[1] ?? '0');
+  const currentTop = Number.parseFloat(topMatch?.[1] ?? '0');
+  const baseLeft = Number.isFinite(currentLeft) ? currentLeft : 0;
+  const baseTop = Number.isFinite(currentTop) ? currentTop : 0;
+
+  const nextLeft = Math.max(0, baseLeft + deltaX);
+  const nextTop = Math.max(0, baseTop + deltaY);
+  const leftValue = formatCanvasCoordinate(nextLeft);
+  const topValue = formatCanvasCoordinate(nextTop);
+
+  let updatedTagText = setOrInsertAttribute(tagMatch.tagText, 'Canvas.Left', leftValue);
+  updatedTagText = setOrInsertAttribute(updatedTagText, 'Canvas.Top', topValue);
+
+  if (updatedTagText === tagMatch.tagText) {
+    return {
+      ok: true,
+      message: 'Move had no effect.',
+    };
+  }
+
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(
+    uri,
+    new vscode.Range(document.positionAt(tagMatch.start), document.positionAt(tagMatch.end)),
+    updatedTagText
+  );
+  const applied = await vscode.workspace.applyEdit(edit);
+  if (!applied) {
+    return {
+      ok: false,
+      message: 'Failed to apply move edit to XAML.',
+    };
+  }
+
+  const updatedDocument = await vscode.workspace.openTextDocument(uri);
+  const pushed = await pushRuntimeXamlUpdate(projectPath, xamlPath, updatedDocument.getText());
+  if (!pushed) {
+    return {
+      ok: false,
+      message: 'Moved element in XAML, but hot reload push failed.',
+    };
+  }
+
+  return {
+    ok: true,
+    message: `Moved ${elementName} to Canvas.Left=${leftValue}, Canvas.Top=${topValue}.`,
+  };
+}
+
+function formatCanvasCoordinate(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '0';
+  }
+
+  const rounded = Math.round(value * 100) / 100;
+  return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(2).replace(/0+$/,'').replace(/\.$/, '');
 }
 
 function findTargetOpeningTag(

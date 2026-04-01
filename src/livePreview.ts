@@ -95,6 +95,12 @@ type ApplyProvider = (
   value: string,
   autoPush: boolean
 ) => Promise<ApplyResult>;
+type MoveProvider = (
+  elementName: string,
+  typeName: string,
+  deltaX: number,
+  deltaY: number
+) => Promise<ApplyResult>;
 type InsertProvider = (
   xNorm: number,
   yNorm: number,
@@ -125,6 +131,7 @@ export class WpfLivePreviewPanel {
     private readonly provideFind: FindProvider,
     private readonly provideInspect: InspectProvider,
     private readonly provideApply: ApplyProvider,
+    private readonly provideMove: MoveProvider,
     private readonly provideInsert: InsertProvider,
     private readonly getDefaultAutoPush: () => boolean
   ) { }
@@ -188,6 +195,17 @@ export class WpfLivePreviewPanel {
         typeof msg.autoPush === 'boolean'
       ) {
         void this.applyProperty(msg.elementName, msg.typeName, msg.property, msg.value, msg.autoPush);
+        return;
+      }
+
+      if (
+        msg?.type === 'dragMove' &&
+        typeof msg.elementName === 'string' &&
+        typeof msg.typeName === 'string' &&
+        typeof msg.deltaX === 'number' &&
+        typeof msg.deltaY === 'number'
+      ) {
+        void this.applyMove(msg.elementName, msg.typeName, msg.deltaX, msg.deltaY);
         return;
       }
 
@@ -353,6 +371,29 @@ export class WpfLivePreviewPanel {
 
     if (result.ok) {
       await this.refresh('manual');
+    }
+  }
+
+  private async applyMove(
+    elementName: string,
+    typeName: string,
+    deltaX: number,
+    deltaY: number
+  ): Promise<void> {
+    if (!this.panel) {
+      return;
+    }
+
+    const result = await this.provideMove(elementName, typeName, deltaX, deltaY);
+    this.panel.webview.postMessage({
+      type: 'applyResult',
+      ok: result.ok,
+      message: result.message,
+    });
+
+    if (result.ok) {
+      await this.refresh('manual');
+      await this.syncSelection(elementName, typeName);
     }
   }
 
@@ -597,7 +638,7 @@ export class WpfLivePreviewPanel {
     <button id="applyForeground">Apply Foreground</button>
   </div>
   <div class="hint" id="applyHint"></div>
-  <div class="panel" id="panel">
+  <div class="panel" id="panel" tabindex="0">
     <div class="state" id="state">Waiting for runtime snapshot…</div>
     <img id="preview" alt="Live WPF preview" style="display:none;" />
     <div class="hit-overlay" id="hitOverlay"></div>
@@ -641,6 +682,8 @@ export class WpfLivePreviewPanel {
     let zoom = 1;
     let currentSelection = null;
     let currentSelectionHit = null;
+    let dragState = null;
+    let suppressNextClick = false;
     let dragDepth = 0;
     let hoverTimer = null;
     let selectionLocked = false;
@@ -650,6 +693,7 @@ export class WpfLivePreviewPanel {
       canEditBackground: false,
       canEditForeground: false,
     };
+
     const savedState = vscode.getState() || {};
     if (typeof savedState.autoPush === 'boolean') {
       autoPush.checked = !!savedState.autoPush;
@@ -711,6 +755,10 @@ export class WpfLivePreviewPanel {
     });
 
     preview.addEventListener('click', event => {
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        return;
+      }
       const rect = preview.getBoundingClientRect();
       if (!rect.width || !rect.height) {
         return;
@@ -732,6 +780,111 @@ export class WpfLivePreviewPanel {
       vscode.postMessage({ type: 'hitTest', xNorm, yNorm, navigateToSource: true });
     });
 
+    preview.addEventListener('mousedown', event => {
+      if (event.button !== 0 || !currentSelectionHit) {
+        return;
+      }
+
+      const rect = preview.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return;
+      }
+
+      const scaleX = rect.width / currentSelectionHit.rootWidth;
+      const scaleY = rect.height / currentSelectionHit.rootHeight;
+      const left = currentSelectionHit.boundsX * scaleX;
+      const top = currentSelectionHit.boundsY * scaleY;
+      const width = Math.max(1, currentSelectionHit.boundsWidth * scaleX);
+      const height = Math.max(1, currentSelectionHit.boundsHeight * scaleY);
+
+      const localX = event.clientX - rect.left;
+      const localY = event.clientY - rect.top;
+      const inside =
+        localX >= left &&
+        localX <= left + width &&
+        localY >= top &&
+        localY <= top + height;
+      if (!inside) {
+        return;
+      }
+
+      dragState = {
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        moved: false,
+      };
+      preview.style.cursor = 'grabbing';
+      event.preventDefault();
+    });
+
+    window.addEventListener('mousemove', event => {
+      if (!dragState || !currentSelectionHit) {
+        return;
+      }
+
+      const rect = preview.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return;
+      }
+
+      const dx = event.clientX - dragState.startClientX;
+      const dy = event.clientY - dragState.startClientY;
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+        dragState.moved = true;
+      }
+
+      const scaleX = rect.width / currentSelectionHit.rootWidth;
+      const scaleY = rect.height / currentSelectionHit.rootHeight;
+      const left = currentSelectionHit.boundsX * scaleX + dx;
+      const top = currentSelectionHit.boundsY * scaleY + dy;
+      const width = Math.max(1, currentSelectionHit.boundsWidth * scaleX);
+      const height = Math.max(1, currentSelectionHit.boundsHeight * scaleY);
+
+      hitOverlay.style.left = left + 'px';
+      hitOverlay.style.top = top + 'px';
+      hitOverlay.style.width = width + 'px';
+      hitOverlay.style.height = height + 'px';
+      hitOverlay.style.display = 'block';
+    });
+
+    window.addEventListener('mouseup', event => {
+      if (!dragState || !currentSelectionHit || !currentSelection) {
+        dragState = null;
+        return;
+      }
+
+      const dx = event.clientX - dragState.startClientX;
+      const dy = event.clientY - dragState.startClientY;
+      const wasMoved = dragState.moved && (Math.abs(dx) > 2 || Math.abs(dy) > 2);
+      dragState = null;
+      preview.style.cursor = 'default';
+
+      if (!wasMoved) {
+        return;
+      }
+
+      suppressNextClick = true;
+
+      const rect = preview.getBoundingClientRect();
+      if (!rect.width || !rect.height || currentSelectionHit.rootWidth <= 0 || currentSelectionHit.rootHeight <= 0) {
+        return;
+      }
+
+      const deltaX = (dx / rect.width) * currentSelectionHit.rootWidth;
+      const deltaY = (dy / rect.height) * currentSelectionHit.rootHeight;
+      if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) {
+        return;
+      }
+
+      vscode.postMessage({
+        type: 'dragMove',
+        elementName: currentSelection.elementName || '',
+        typeName: currentSelection.typeName || '',
+        deltaX,
+        deltaY,
+      });
+    });
+
     panel.addEventListener('wheel', event => {
       if (!event.altKey || rootWidth <= 0 || rootHeight <= 0) {
         return;
@@ -743,6 +896,8 @@ export class WpfLivePreviewPanel {
       applyPreviewScale();
       relayoutOverlays();
     }, { passive: false });
+
+    // Drag is the supported direct-manipulation path.
 
     preview.addEventListener('mousemove', event => {
       if (selectionLocked) {

@@ -441,6 +441,11 @@ export async function findRuntimePreviewElement(
   elementName: string,
   typeName: string
 ): Promise<RuntimePreviewHit | null> {
+  if (!elementName || elementName.trim().length === 0) {
+    // Type-only lookup is too ambiguous for reliable reverse mapping.
+    return null;
+  }
+
   const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
   if (!info) {
     getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot find preview element: no running session for ${projectPath}`);
