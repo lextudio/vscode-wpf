@@ -1,5 +1,10 @@
 # Change Log
 
+## [0.9.5] - 2026-04-01
+
+- Forced Hot Reload overlay to appear early in live app.
+- Fixed launch designer bug.
+
 ## [0.9.4] - 2026-04-01
 
 - Added WPF Toolbox so controls can be dragged to XAML editor.

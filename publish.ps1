@@ -35,7 +35,7 @@ function Load-Token {
 	}
 
 	try {
-		$encrypted = Get-Content -Path $tokenStorePath -Raw -Encoding UTF8
+		$encrypted = (Get-Content -Path $tokenStorePath -Raw -Encoding UTF8).Trim()
 		if ([string]::IsNullOrWhiteSpace($encrypted)) {
 			return $null
 		}
