@@ -32,6 +32,7 @@ public static class WpfHotReloadAgent
     private static HotReloadOverlay? _overlay;
     private static bool _previewHostHiddenByAgent;
     private static int _initialHideWorkerStarted;
+    private static int _overlayStartupWorkerStarted;
     private static readonly bool _startHiddenRequested = ReadBooleanEnvironmentVariable("WPF_HOTRELOAD_START_HIDDEN");
 
     public static string PipeName { get; } =
@@ -58,6 +59,7 @@ public static class WpfHotReloadAgent
     {
         Log($"EnsurePipeListenerStarted called, already running={_pipeListenerRunning}");
         EnsureStartHiddenWorker();
+        EnsureOverlayStartupWorker();
         if (_pipeListenerRunning)
         {
             return;
@@ -109,6 +111,69 @@ public static class WpfHotReloadAgent
             Name = "WpfHotReloadInitialHide",
         };
         worker.Start();
+    }
+
+    /// <summary>
+    /// Starts a one-time background thread that polls until the main window is loaded
+    /// and then injects the overlay toolbar.  This runs independently of any pipe
+    /// connection so the overlay appears as soon as the app starts, not only after
+    /// the first Hot Reload click.
+    /// </summary>
+    private static void EnsureOverlayStartupWorker()
+    {
+        if (Interlocked.Exchange(ref _overlayStartupWorkerStarted, 1) != 0)
+        {
+            return;
+        }
+
+        var worker = new Thread(InjectOverlayOnStartupLoop)
+        {
+            IsBackground = true,
+            Name = "WpfHotReloadOverlayInit",
+        };
+        worker.Start();
+    }
+
+    private static void InjectOverlayOnStartupLoop()
+    {
+        var startedAt = Stopwatch.StartNew();
+        while (startedAt.Elapsed < TimeSpan.FromSeconds(30))
+        {
+            try
+            {
+                var app = Application.Current;
+                if (app is not null)
+                {
+                    bool injected = app.Dispatcher.Invoke(() =>
+                    {
+                        if (_overlay is not null)
+                        {
+                            return true; // already done
+                        }
+
+                        var mainWindow = app.MainWindow;
+                        if (mainWindow is null || !mainWindow.IsLoaded)
+                        {
+                            return false;
+                        }
+
+                        InjectOverlay(mainWindow);
+                        return _overlay is not null;
+                    });
+
+                    if (injected)
+                    {
+                        return;
+                    }
+                }
+            }
+            catch
+            {
+                // Keep retrying while app startup stabilizes.
+            }
+
+            Thread.Sleep(100);
+        }
     }
 
     private static void HidePreviewHostOnStartupLoop()
@@ -570,6 +635,7 @@ public static class WpfHotReloadAgent
             _dragStart = current;
 
             InvalidateArrange();
+            InvalidateVisual();
             e.Handled = true;
         }
 
