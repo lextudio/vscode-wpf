@@ -1,5 +1,7 @@
 node_modules/**
 src/**
+docs/**
+.github/**
 .claude/**
 .vscode/**
 .git/**
@@ -12,9 +14,8 @@ external/**
 scripts/**
 *.ts
 *.map
+*.ps1
 tsconfig.json
 .vscodeignore
 .gitignore
-README.md
-DESIGN.md
-.github/**
+.gitmodules
