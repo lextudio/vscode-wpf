@@ -3,7 +3,7 @@ import {
   LanguageClient,
 } from 'vscode-languageclient/node';
 
-export interface PreviewProjectContext {
+export interface DesignerProjectContext {
   projectPath: string;
   projectDirectory: string;
   filePath: string;
@@ -26,10 +26,10 @@ export interface HotReloadMapDocumentResult {
   confidence?: number;
 }
 
-export async function requestPreviewProjectContext(
+export async function requestDesignerProjectContext(
   client: LanguageClient | undefined,
   documentUri: vscode.Uri
-): Promise<PreviewProjectContext | null> {
+): Promise<DesignerProjectContext | null> {
   if (!client) {
     return null;
   }
@@ -39,7 +39,7 @@ export async function requestPreviewProjectContext(
     ?? null;
 
   try {
-    const result = await client.sendRequest<PreviewProjectContext | null>(
+    const result = await client.sendRequest<DesignerProjectContext | null>(
       'axsg/preview/projectContext',
       {
         textDocument: { uri: documentUri.toString() },
@@ -51,6 +51,9 @@ export async function requestPreviewProjectContext(
     return null;
   }
 }
+
+export type PreviewProjectContext = DesignerProjectContext;
+export const requestPreviewProjectContext = requestDesignerProjectContext;
 
 export async function requestHotReloadMapDocument(
   client: LanguageClient | undefined,

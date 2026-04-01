@@ -2,7 +2,7 @@
   "name": "vscode-wpf",
   "displayName": "VS Code Tools for WPF",
   "description": "VS Code extension for WPF (.xaml) files with visual designer integration.",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "publisher": "lextudio",
   "engines": {
     "vscode": "^1.101.0"
@@ -16,6 +16,7 @@
   "activationEvents": [
     "onView:wpf.toolbox",
     "onLanguage:xaml",
+    "onCommand:wpf.launchDesigner",
     "onCommand:wpf.previewXaml",
     "onCommand:wpf.hotReload",
     "onCommand:wpf.rebuildRestartDesigner",
@@ -61,7 +62,7 @@
   "contributes": {
     "commands": [
       {
-        "command": "wpf.previewXaml",
+        "command": "wpf.launchDesigner",
         "title": "WPF: Launch Designer",
         "icon": {
           "light": "images/designer.svg",
@@ -113,7 +114,7 @@
           "group": "navigation"
         },
         {
-          "command": "wpf.previewXaml",
+          "command": "wpf.launchDesigner",
           "when": "resourceExtname == .xaml",
           "group": "navigation@1"
         }
@@ -130,7 +131,7 @@
           "command": "wpf.hotReload"
         },
         {
-          "command": "wpf.previewXaml"
+          "command": "wpf.launchDesigner"
         },
         {
           "command": "wpf.rebuildRestartDesigner"
@@ -177,20 +178,32 @@
           "default": "dotnet",
           "description": "Path to the dotnet CLI executable used for building projects."
         },
-        "wpf.autoBuildOnPreview": {
+        "wpf.autoBuildOnDesignerLaunch": {
           "type": "boolean",
           "default": true,
           "description": "Automatically build the project before launching the visual designer."
         },
-        "wpf.livePreviewOnEdit": {
+        "wpf.autoBuildOnPreview": {
+          "type": "boolean",
+          "default": true,
+          "description": "Deprecated. Use wpf.autoBuildOnDesignerLaunch.",
+          "deprecationMessage": "Use wpf.autoBuildOnDesignerLaunch instead."
+        },
+        "wpf.designerSyncOnEdit": {
           "type": "boolean",
           "default": true,
           "description": "When a designer session is already running, push XAML editor changes into it automatically without rebuilding."
         },
-        "wpf.liveRuntimeOnEdit": {
+        "wpf.runtimeHotReloadOnEdit": {
           "type": "boolean",
           "default": false,
           "description": "Reserved for automatic runtime hot reload on edit. The current runtime hot reload flow is push-based from the Hot Reload command."
+        },
+        "wpf.liveRuntimeOnEdit": {
+          "type": "boolean",
+          "default": false,
+          "description": "Deprecated. Use wpf.runtimeHotReloadOnEdit.",
+          "deprecationMessage": "Use wpf.runtimeHotReloadOnEdit instead."
         },
         "wpf.buildConfiguration": {
           "type": "string",

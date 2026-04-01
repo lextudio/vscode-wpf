@@ -12,23 +12,16 @@ development experience for WPF with open source components
 - XAML Source Generator (XSG) based language server
 - Runtime startup-hook based XAML Hot Reload
 - VS Code toolbox drag/drop for XAML controls
-- Out-of-process live preview pane (`WPF Live Preview`) fed by runtime protocol snapshots
-- Live Preview selection sync, property editing (`Text`/`Background`/`Foreground`), and preview-surface toolbox drop insertion
 
 > Note that to inspect runtime state of your WPF apps, tools like [Snoop](https://github.com/snoopwpf/snoopwpf) can be used. We might explore how to integrate them in this extension in the future.
 
 ## Getting started
 
 - Activates on `*.xaml` files.
-- Click the `Hot Reload`, `Live Preview`, or `Designer` actions on the top-right of your XAML editor tab.
+- Click the `Hot Reload` or `Launch Designer` actions on the top-right of your XAML editor tab.
 - Use the Explorer side bar views:
-  - `WPF Toolbox` to drag controls into XAML editors or onto the `WPF Live Preview` surface.
-- `WPF Live Preview` opens as an editor-side panel when the `Live Preview` action is clicked.
+  - `WPF Toolbox` to drag controls into XAML editors.
 - Use `WPF: Open XAML File` from Command Palette (or right-click a `.csproj` in Explorer) to open linked/non-discoverable XAML files.
-- In Live Preview:
-  - Click an element to sync selection to source.
-  - Edit `Text`, `Background`, or `Foreground` in the property section.
-  - Enable `Auto Push Hot Reload` to apply successful source edits to the running app immediately.
 
 ## Status
 

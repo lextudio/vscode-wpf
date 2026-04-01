@@ -16,46 +16,7 @@ interface RuntimeSessionInfo {
   pipeReady: boolean;
 }
 
-export interface RuntimePreviewFrame {
-  readonly pngBase64: string;
-  readonly width: number;
-  readonly height: number;
-  readonly source: string;
-}
-
-export interface RuntimePreviewHit {
-  readonly typeName: string;
-  readonly elementName: string;
-  readonly boundsX: number;
-  readonly boundsY: number;
-  readonly boundsWidth: number;
-  readonly boundsHeight: number;
-  readonly rootWidth: number;
-  readonly rootHeight: number;
-}
-
-export interface RuntimePreviewProperties {
-  readonly typeName: string;
-  readonly elementName: string;
-  readonly text: string;
-  readonly background: string;
-  readonly foreground: string;
-  readonly width: string;
-  readonly height: string;
-  readonly actualWidth: string;
-  readonly actualHeight: string;
-  readonly margin: string;
-  readonly horizontalAlignment: string;
-  readonly verticalAlignment: string;
-  readonly isEnabled: string;
-  readonly visibility: string;
-  readonly canEditText: boolean;
-  readonly canEditBackground: boolean;
-  readonly canEditForeground: boolean;
-}
-
 let outputChannel: vscode.OutputChannel | undefined;
-let livePreviewOutputChannel: vscode.OutputChannel | undefined;
 let extensionPath: string | undefined;
 
 const runtimeSessionsByProject = new Map<string, RuntimeSessionInfo>();
@@ -73,20 +34,17 @@ function getOutputChannel(): vscode.OutputChannel {
   return outputChannel;
 }
 
-function getLivePreviewOutputChannel(): vscode.OutputChannel {
-  if (!livePreviewOutputChannel) {
-    livePreviewOutputChannel = vscode.window.createOutputChannel('WPF Live Preview');
+function getAutoBuildOnDesignerLaunch(configuration: vscode.WorkspaceConfiguration): boolean {
+  const explicit = configuration.get<boolean | undefined>('autoBuildOnDesignerLaunch');
+  if (typeof explicit === 'boolean') {
+    return explicit;
   }
 
-  return livePreviewOutputChannel;
+  return configuration.get<boolean>('autoBuildOnPreview', true);
 }
 
 export function showRuntimeHotReloadOutput(): void {
   getOutputChannel().show(true);
-}
-
-export function showRuntimeLivePreviewOutput(): void {
-  getLivePreviewOutputChannel().show(true);
 }
 
 export function registerRuntimeHotReload(context: vscode.ExtensionContext): void {
@@ -104,8 +62,6 @@ export function registerRuntimeHotReload(context: vscode.ExtensionContext): void
       runtimeSessionsByProject.clear();
       outputChannel?.dispose();
       outputChannel = undefined;
-      livePreviewOutputChannel?.dispose();
-      livePreviewOutputChannel = undefined;
     },
   });
 }
@@ -121,13 +77,10 @@ export function getRuntimeSessionInfo(projectPath: string): RuntimeSessionInfo |
 export async function startRuntimeHotReloadSession(
   context: vscode.ExtensionContext,
   projectPath: string,
-  xamlPath?: string,
-  logTarget: 'hotReload' | 'livePreview' = 'hotReload'
+  xamlPath?: string
 ): Promise<boolean> {
   const sessionKey = toProjectSessionKey(projectPath);
-  const channel = logTarget === 'livePreview'
-    ? getLivePreviewOutputChannel()
-    : getOutputChannel();
+  const channel = getOutputChannel();
 
   if (runtimeSessionsByProject.has(sessionKey)) {
     channel.appendLine(`[Runtime] Reusing existing session for ${projectPath}`);
@@ -140,7 +93,7 @@ export async function startRuntimeHotReloadSession(
 
   const cfg = vscode.workspace.getConfiguration('wpf');
   const dotnetPath = cfg.get<string>('dotnetPath', 'dotnet');
-  const autoBuild = cfg.get<boolean>('autoBuildOnPreview', true);
+  const autoBuild = getAutoBuildOnDesignerLaunch(cfg);
 
   if (autoBuild && !areProjectOutputsUpToDate(projectPath)) {
     const result = await vscode.window.withProgress(
@@ -173,11 +126,7 @@ export async function startRuntimeHotReloadSession(
   const pipeName = `wpf-hotreload-${crypto.randomUUID()}`;
   const env: Record<string, string | undefined> = { ...process.env };
   env['WPF_HOTRELOAD_PIPE'] = pipeName;
-  if (logTarget === 'livePreview') {
-    env['WPF_HOTRELOAD_START_HIDDEN'] = '1';
-  } else {
-    env['WPF_HOTRELOAD_START_HIDDEN'] = '0';
-  }
+  env['WPF_HOTRELOAD_START_HIDDEN'] = '0';
 
   if (helperAssemblyPath) {
     if (isFramework) {
@@ -307,317 +256,6 @@ export async function pushRuntimeXamlUpdate(
   return false;
 }
 
-export async function captureRuntimePreview(
-  projectPath: string,
-  xamlPath?: string
-): Promise<RuntimePreviewFrame | null> {
-  const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
-  if (!info) {
-    getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot capture preview: no running session for ${projectPath}`);
-    return null;
-  }
-
-  if (xamlPath) {
-    info.xamlPath = xamlPath;
-  }
-
-  if (!info.pipeReady) {
-    const startupReady = await probeRuntimePipeReadyWithBackoff(info.pipeName, 5, 120);
-    if (!startupReady) {
-      getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot capture preview: runtime pipe not ready (${info.pipeName}).`);
-      return null;
-    }
-    info.pipeReady = true;
-  }
-
-  const payload: Record<string, unknown> = {
-    kind: 'preview',
-    action: 'capture',
-  };
-
-  if (info.xamlPath) {
-    payload.filePath = info.xamlPath;
-  }
-
-  const response = await sendPipeRequest(info.pipeName, payload);
-  if (!response || response.result !== 'ok' || !response.value) {
-    const reason = response?.result ? ` (${response.result})` : '';
-    getLivePreviewOutputChannel().appendLine(`[Runtime] Preview capture failed: runtime returned no frame${reason}.`);
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(response.value) as Partial<RuntimePreviewFrame>;
-    const width = toNumber(parsed.width);
-    const height = toNumber(parsed.height);
-    if (!parsed.pngBase64 || width === null || height === null) {
-      return null;
-    }
-
-    return {
-      pngBase64: parsed.pngBase64,
-      width,
-      height,
-      source: typeof parsed.source === 'string' ? parsed.source : 'runtime-main-window',
-    };
-  } catch {
-    return null;
-  }
-}
-
-export async function hitTestRuntimePreview(
-  projectPath: string,
-  xamlPath: string | undefined,
-  xNorm: number,
-  yNorm: number
-): Promise<RuntimePreviewHit | null> {
-  const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
-  if (!info) {
-    getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot hit-test preview: no running session for ${projectPath}`);
-    return null;
-  }
-
-  if (xamlPath) {
-    info.xamlPath = xamlPath;
-  }
-
-  if (!info.pipeReady) {
-    const startupReady = await probeRuntimePipeReady(info.pipeName);
-    if (!startupReady) {
-      getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot hit-test preview: runtime pipe not ready (${info.pipeName}).`);
-      return null;
-    }
-    info.pipeReady = true;
-  }
-
-  const payload: Record<string, unknown> = {
-    kind: 'preview',
-    action: 'hitTest',
-    xNorm: xNorm.toString(),
-    yNorm: yNorm.toString(),
-  };
-
-  if (info.xamlPath) {
-    payload.filePath = info.xamlPath;
-  }
-
-  const response = await sendPipeRequest(info.pipeName, payload);
-  if (!response || response.result !== 'ok' || !response.value) {
-    const reason = response?.result ? ` (${response.result})` : '';
-    getLivePreviewOutputChannel().appendLine(`[Runtime] Preview hit-test failed: runtime returned no hit${reason}.`);
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(response.value) as Partial<RuntimePreviewHit>;
-    const boundsX = toNumber(parsed.boundsX);
-    const boundsY = toNumber(parsed.boundsY);
-    const boundsWidth = toNumber(parsed.boundsWidth);
-    const boundsHeight = toNumber(parsed.boundsHeight);
-    const rootWidth = toNumber(parsed.rootWidth);
-    const rootHeight = toNumber(parsed.rootHeight);
-    if (!parsed.typeName || boundsX === null || boundsY === null) {
-      return null;
-    }
-
-    return {
-      typeName: parsed.typeName,
-      elementName: typeof parsed.elementName === 'string' ? parsed.elementName : '',
-      boundsX,
-      boundsY,
-      boundsWidth: boundsWidth ?? 0,
-      boundsHeight: boundsHeight ?? 0,
-      rootWidth: rootWidth ?? 0,
-      rootHeight: rootHeight ?? 0,
-    };
-  } catch {
-    return null;
-  }
-}
-
-export async function findRuntimePreviewElement(
-  projectPath: string,
-  xamlPath: string | undefined,
-  elementName: string,
-  typeName: string
-): Promise<RuntimePreviewHit | null> {
-  if (!elementName || elementName.trim().length === 0) {
-    // Type-only lookup is too ambiguous for reliable reverse mapping.
-    return null;
-  }
-
-  const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
-  if (!info) {
-    getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot find preview element: no running session for ${projectPath}`);
-    return null;
-  }
-
-  if (xamlPath) {
-    info.xamlPath = xamlPath;
-  }
-
-  if (!info.pipeReady) {
-    const startupReady = await probeRuntimePipeReady(info.pipeName);
-    if (!startupReady) {
-      getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot find preview element: runtime pipe not ready (${info.pipeName}).`);
-      return null;
-    }
-    info.pipeReady = true;
-  }
-
-  const query = `name=${encodeURIComponent(elementName || '')};type=${encodeURIComponent(typeName || '')}`;
-  const payload: Record<string, unknown> = {
-    kind: 'preview',
-    action: 'find',
-    query,
-  };
-
-  if (info.xamlPath) {
-    payload.filePath = info.xamlPath;
-  }
-
-  const response = await sendPipeRequest(info.pipeName, payload);
-  if (!response || response.result !== 'ok' || !response.value) {
-    const reason = response?.result ? ` (${response.result})` : '';
-    getLivePreviewOutputChannel().appendLine(`[Runtime] Preview find failed: runtime returned no match${reason}.`);
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(response.value) as Partial<RuntimePreviewHit>;
-    const boundsX = toNumber(parsed.boundsX);
-    const boundsY = toNumber(parsed.boundsY);
-    const boundsWidth = toNumber(parsed.boundsWidth);
-    const boundsHeight = toNumber(parsed.boundsHeight);
-    const rootWidth = toNumber(parsed.rootWidth);
-    const rootHeight = toNumber(parsed.rootHeight);
-    if (!parsed.typeName || boundsX === null || boundsY === null) {
-      return null;
-    }
-
-    return {
-      typeName: parsed.typeName,
-      elementName: typeof parsed.elementName === 'string' ? parsed.elementName : '',
-      boundsX,
-      boundsY,
-      boundsWidth: boundsWidth ?? 0,
-      boundsHeight: boundsHeight ?? 0,
-      rootWidth: rootWidth ?? 0,
-      rootHeight: rootHeight ?? 0,
-    };
-  } catch {
-    return null;
-  }
-}
-
-export async function inspectRuntimePreviewElement(
-  projectPath: string,
-  xamlPath: string | undefined,
-  elementName: string,
-  typeName: string
-): Promise<RuntimePreviewProperties | null> {
-  const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
-  if (!info) {
-    getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot inspect preview element: no running session for ${projectPath}`);
-    return null;
-  }
-
-  if (xamlPath) {
-    info.xamlPath = xamlPath;
-  }
-
-  if (!info.pipeReady) {
-    const startupReady = await probeRuntimePipeReady(info.pipeName);
-    if (!startupReady) {
-      getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot inspect preview element: runtime pipe not ready (${info.pipeName}).`);
-      return null;
-    }
-    info.pipeReady = true;
-  }
-
-  const query = `name=${encodeURIComponent(elementName || '')};type=${encodeURIComponent(typeName || '')}`;
-  const payload: Record<string, unknown> = {
-    kind: 'preview',
-    action: 'inspect',
-    query,
-  };
-
-  if (info.xamlPath) {
-    payload.filePath = info.xamlPath;
-  }
-
-  const response = await sendPipeRequest(info.pipeName, payload);
-  if (!response || response.result !== 'ok' || !response.value) {
-    const reason = response?.result ? ` (${response.result})` : '';
-    getLivePreviewOutputChannel().appendLine(`[Runtime] Preview inspect failed: runtime returned no result${reason}.`);
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(response.value) as Partial<RuntimePreviewProperties>;
-    if (!parsed.typeName) {
-      return null;
-    }
-
-    return {
-      typeName: parsed.typeName,
-      elementName: typeof parsed.elementName === 'string' ? parsed.elementName : '',
-      text: typeof parsed.text === 'string' ? parsed.text : '',
-      background: typeof parsed.background === 'string' ? parsed.background : '',
-      foreground: typeof parsed.foreground === 'string' ? parsed.foreground : '',
-      width: typeof parsed.width === 'string' ? parsed.width : '',
-      height: typeof parsed.height === 'string' ? parsed.height : '',
-      actualWidth: typeof parsed.actualWidth === 'string' ? parsed.actualWidth : '',
-      actualHeight: typeof parsed.actualHeight === 'string' ? parsed.actualHeight : '',
-      margin: typeof parsed.margin === 'string' ? parsed.margin : '',
-      horizontalAlignment: typeof parsed.horizontalAlignment === 'string' ? parsed.horizontalAlignment : '',
-      verticalAlignment: typeof parsed.verticalAlignment === 'string' ? parsed.verticalAlignment : '',
-      isEnabled: typeof parsed.isEnabled === 'string' ? parsed.isEnabled : '',
-      visibility: typeof parsed.visibility === 'string' ? parsed.visibility : '',
-      canEditText: toBoolean(parsed.canEditText),
-      canEditBackground: toBoolean(parsed.canEditBackground),
-      canEditForeground: toBoolean(parsed.canEditForeground),
-    };
-  } catch {
-    return null;
-  }
-}
-
-export async function setRuntimePreviewHostVisibility(
-  projectPath: string,
-  hidden: boolean
-): Promise<boolean> {
-  const info = runtimeSessionsByProject.get(toProjectSessionKey(projectPath));
-  if (!info) {
-    getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot set preview host visibility: no running session for ${projectPath}`);
-    return false;
-  }
-
-  if (!info.pipeReady) {
-    const startupReady = await probeRuntimePipeReadyWithBackoff(info.pipeName, 4, 120);
-    if (!startupReady) {
-      getLivePreviewOutputChannel().appendLine(`[Runtime] Cannot set preview host visibility: runtime pipe not ready (${info.pipeName}).`);
-      return false;
-    }
-    info.pipeReady = true;
-  }
-
-  const response = await sendPipeRequest(info.pipeName, {
-    kind: 'preview',
-    action: 'setHostVisibility',
-    query: hidden ? 'hidden' : 'visible',
-  });
-
-  if (!response || response.result !== 'ok') {
-    const reason = response?.result ? ` (${response.result})` : '';
-    getLivePreviewOutputChannel().appendLine(`[Runtime] Failed to set preview host visibility${reason}.`);
-    return false;
-  }
-
-  getLivePreviewOutputChannel().appendLine(`[Runtime] Preview host visibility set to ${hidden ? 'hidden' : 'visible'}.`);
-  return true;
-}
-
 function sendViaPipe(
   pipeName: string,
   filePath: string,
@@ -667,26 +305,6 @@ function sendViaPipe(
 async function probeRuntimePipeReady(pipeName: string): Promise<boolean> {
   const response = await sendPipeRequest(pipeName, { kind: 'query', query: 'agent.ready' });
   return response?.result === 'ok' && response.value === '1';
-}
-
-async function probeRuntimePipeReadyWithBackoff(
-  pipeName: string,
-  attempts: number,
-  initialDelayMs: number
-): Promise<boolean> {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const ready = await probeRuntimePipeReady(pipeName);
-    if (ready) {
-      return true;
-    }
-
-    if (attempt < attempts - 1) {
-      const delay = initialDelayMs * Math.pow(2, attempt);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-
-  return false;
 }
 
 function sendPipeRequest(
@@ -796,31 +414,6 @@ function resolveRuntimeHelperTargetFramework(projectTfm: string): string {
 
   // Fallback to modern runtime path.
   return 'netcoreapp3.0';
-}
-
-function toNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  return null;
-}
-
-function toBoolean(value: unknown): boolean {
-  if (typeof value === 'boolean') {
-    return value;
-  }
-
-  if (typeof value === 'string') {
-    return value.toLowerCase() === 'true' || value === '1';
-  }
-
-  return false;
 }
 
 function isRuntimeHelperUpToDate(projectPath: string, helperDllPath: string): boolean {

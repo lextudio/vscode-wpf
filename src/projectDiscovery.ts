@@ -189,7 +189,7 @@ export function getOutputAssemblies(projectPath: string): string[] {
 }
 
 /**
- * Best-effort incremental check used before spawning a preview build.
+ * Best-effort incremental check used before spawning a designer build.
  * If the newest relevant source file is older than the newest output assembly,
  * we can skip `dotnet build` and launch the designer immediately.
  */
@@ -306,7 +306,7 @@ export function getLaunchTarget(projectPath: string, dotnetPath = 'dotnet'): Lau
 }
 
 /**
- * Show a QuickPick so the user can choose which project to build/preview.
+ * Show a QuickPick so the user can choose which project to build or launch in the designer.
  */
 export async function showProjectPicker(projects: string[]): Promise<string | undefined> {
   if (projects.length === 0) {
@@ -327,7 +327,7 @@ export async function showProjectPicker(projects: string[]): Promise<string | un
   }));
 
   const pick = await vscode.window.showQuickPick(items, {
-    placeHolder: 'Select the WPF project to build and preview',
+    placeHolder: 'Select the WPF project to build or launch in the designer',
   });
 
   return pick?.projectPath;

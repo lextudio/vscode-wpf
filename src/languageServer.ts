@@ -9,10 +9,10 @@ import {
 } from 'vscode-languageclient/node';
 import { ensureDotnetRuntime, getPreferredDotnetPath } from './dotnetBootstrap';
 import {
+  DesignerProjectContext,
   HotReloadMapDocumentResult,
-  PreviewProjectContext,
+  requestDesignerProjectContext,
   requestHotReloadMapDocument,
-  requestPreviewProjectContext,
 } from './languageServerProtocol';
 
 let client: LanguageClient | undefined;
@@ -111,9 +111,11 @@ export function getLanguageServerClient(): LanguageClient | undefined {
   return client;
 }
 
-export async function getPreviewProjectContext(documentUri: vscode.Uri): Promise<PreviewProjectContext | null> {
-  return requestPreviewProjectContext(client, documentUri);
+export async function getDesignerProjectContext(documentUri: vscode.Uri): Promise<DesignerProjectContext | null> {
+  return requestDesignerProjectContext(client, documentUri);
 }
+
+export const getPreviewProjectContext = getDesignerProjectContext;
 
 export async function getHotReloadMapDocument(
   documentUri: vscode.Uri,

@@ -390,7 +390,7 @@ async function sendDesignerMessageWithRetry(
     } catch {
       if (attempt === attempts - 1) {
         vscode.window.showWarningMessage(
-          'The designer launched, but live XAML sync did not connect. Preview is showing the last saved file contents.'
+          'The designer launched, but live XAML sync did not connect. The designer is showing the last saved file contents.'
         );
         return;
       }

@@ -24,7 +24,6 @@ Runtime hot reload is now **runtime-first, push-based, and debugger-free**. The 
 - Named pipe is the **only** runtime communication channel (no DAP/debugger fallback needed).
 - Runtime hot reload is **manual push**, not auto-apply-on-edit.
 - **In-app overlay toolbar** injected by the runtime helper shows Hot Reload status inside the WPF app.
-- Added a VS Code **WPF Live Preview** pane backed by the same out-of-process named-pipe protocol used for hot reload.
 - Added protocol message kind `preview` (MVP action: `capture`) returning PNG snapshots from the running WPF app.
 
 ### Important reliability fixes completed
@@ -61,7 +60,7 @@ Runtime hot reload is now **runtime-first, push-based, and debugger-free**. The 
 
 ## Goals
 
-1. **Preview button** — When a `.xaml` file is open, show a "Preview in Designer" button in the editor title bar.
+1. **Launch Designer button** — When a `.xaml` file is open, show a "Launch Designer" button in the editor title bar.
 2. **Project awareness** — Before launching the designer, discover and build the associated .NET project so that custom types and styles resolve correctly.
 3. **Round-trip editing** — The designer writes changes directly to disk; VS Code's file-system watcher picks them up automatically.
 4. **Framework support** — Works for both .NET Framework (SDK-style `.csproj`) and modern .NET (`.NET 5+`) projects. Legacy non-SDK projects fall back to `msbuild`.
@@ -212,17 +211,17 @@ getDesignerExecutable(context: vscode.ExtensionContext): string | null
 
 **Launch step — persistent designer session:**
 
-One designer process is kept alive **per project**. This avoids the startup overhead on every preview request.
+One designer process is kept alive **per project**. This avoids the startup overhead on every designer launch request.
 
-1. On first preview for a project:
+1. On first designer launch for a project:
    - Generate a unique named pipe name: `XamlDesigner-<timestamp>`.
    - Spawn `XamlDesigner.exe --pipe <pipeName> <file.xaml> [assemblies…]` detached.
    - Store `{ proc, pipeName }` in `activeDesigners` keyed by project path.
-2. On subsequent previews for the same project (designer already running):
+2. On subsequent designer launches for the same project (designer already running):
    - Connect to `\\.\pipe\<pipeName>` via `net.createConnection`.
    - Write the XAML file path as a newline-terminated string.
    - The designer opens/activates the file and brings its window to the foreground.
-3. When the designer process exits, the session is removed and the next preview re-launches it.
+3. When the designer process exits, the session is removed and the next designer launch re-launches it.
 
 **XamlDesigner pipe server (`App.xaml.cs`):**
 
@@ -244,11 +243,11 @@ One designer process is kept alive **per project**. This avoids the startup over
 | Command ID              | Title                          | When visible                        |
 |-------------------------|--------------------------------|-------------------------------------|
 | `wpf.hotReload`         | WPF: Hot Reload                | Editor title bar, `.xaml` files     |
-| `wpf.previewXaml`       | WPF: Preview in Designer       | Editor title bar, `.xaml` files     |
+| `wpf.launchDesigner`   | WPF: Launch Designer           | Editor title bar, `.xaml` files     |
 | `wpf.selectProject`     | WPF: Select Project            | Command palette                     |
 | `wpf.buildDesignerTools`| WPF: Build Designer Tools      | Command palette                     |
 
-**`wpf.previewXaml` flow:**
+**`wpf.launchDesigner` flow:**
 
 ```
 0. isWpfXaml() — reject with error if namespace is not WPF (Avalonia / UWP / WinUI / Uno).
@@ -345,7 +344,6 @@ For custom/user controls:
 
 - After insertion, normal document change events already trigger:
   - language server reanalysis,
-  - optional live designer update (`wpf.livePreviewOnEdit`),
   - manual runtime push via `WPF: Hot Reload`.
 - No extra hot reload transport is required for v1.
 
@@ -398,7 +396,7 @@ vscode-wpf/
 
 ```json
 { "command": "wpf.hotReload",           "title": "WPF: Hot Reload",          "icon": "$(flame)" },
-{ "command": "wpf.previewXaml",        "title": "WPF: Preview in Designer", "icon": "$(open-preview)" },
+{ "command": "wpf.launchDesigner",     "title": "WPF: Launch Designer",     "icon": "$(open-preview)" },
 { "command": "wpf.selectProject",       "title": "WPF: Select Project" },
 { "command": "wpf.buildDesignerTools",  "title": "WPF: Build Designer Tools" }
 ```
@@ -407,7 +405,7 @@ vscode-wpf/
 
 ```json
 "editor/title": [
-  { "command": "wpf.previewXaml", "when": "resourceExtname == .xaml", "group": "navigation" }
+  { "command": "wpf.launchDesigner", "when": "resourceExtname == .xaml", "group": "navigation" }
 ]
 ```
 
@@ -423,7 +421,7 @@ vscode-wpf/
   "default": "dotnet",
   "description": "Path to the dotnet CLI executable."
 },
-"wpf.autoBuildOnPreview": {
+"wpf.autoBuildOnDesignerLaunch": {
   "type": "boolean",
   "default": true,
   "description": "Automatically build the project before launching the designer."
@@ -648,8 +646,8 @@ The baseline assembly set is updated only after a successful build. Between buil
 #### Rebuild-required update
 
 1. A change affects compiled type shape or assembly output.
-2. Mark the preview session as requiring rebuild.
-3. On the next preview refresh:
+2. Mark the designer session as requiring rebuild.
+3. On the next designer refresh:
    - build the project
    - update the baseline assembly set
    - ask the designer to reload against the new baseline
@@ -671,7 +669,7 @@ The baseline assembly set is updated only after a successful build. Between buil
 
 ### Language server responsibilities
 
-The language server should be extended from simple project-context lookup to explicit preview readiness evaluation.
+The language server should be extended from simple project-context lookup to explicit designer readiness evaluation.
 
 Recommended custom request:
 
@@ -747,7 +745,7 @@ This matches the best part of AXSG’s live tooling model: the editor can move t
 
 - add `axsg/preview/readiness`
 - classify edits into `live`, `blocked`, or `rebuild-required`
-- stop rebuilding on every preview request
+- stop rebuilding on every designer launch request
 - rebuild only when readiness says the assembly baseline is stale
 
 #### Phase 3C — designer-originated round trip
@@ -758,11 +756,11 @@ This matches the best part of AXSG’s live tooling model: the editor can move t
 
 ### Success criteria
 
-- Reopening preview for plain XAML edits does not rebuild the project.
+- Reopening the designer for plain XAML edits does not rebuild the project.
 - Unsaved XAML edits can appear in the running designer.
-- Invalid intermediate edits do not destroy the current preview.
-- Code-behind and custom-control changes correctly force rebuild before preview refresh.
-- The language server is the single authority for preview project context and preview readiness.
+- Invalid intermediate edits do not destroy the current designer session.
+- Code-behind and custom-control changes correctly force rebuild before designer refresh.
+- The language server is the single authority for designer project context and designer readiness.
 
 ---
 
@@ -926,7 +924,6 @@ Protocol:
 Commands:
 
 - `applyXamlText` — push XAML text to be applied to the live UI
-- `preview.capture` — return a PNG snapshot from the running app (used by VS Code `WPF Live Preview` pane)
 - `applyScopedPatch` — apply a targeted property/subtree update (future)
 - `reloadResourceDictionary` — reload resource scope without full window replace (future)
 - `enumerateRoots` — list live window/page instances (future)
@@ -963,14 +960,11 @@ Commands:
 - `setProperty`
 - `serializeDocument`
 
-### Live Preview to Embedded Designer (Phased Plan)
 
-The current `WPF Live Preview` pane is the correct foundation for an embedded designer.  
 We should extend it incrementally, keeping the runtime-first architecture and avoiding a big-bang rewrite.
 
 #### Core principles
 
-- Keep **three side-by-side actions** independent: `Hot Reload`, `Live Preview`, `Launch Designer`.
 - Treat the preview pane as a **design client** over the existing runtime pipe protocol.
 - Keep AXSG/XSG as the source of truth for document mapping and safe edit classification.
 - Prefer **targeted XAML text edits** over direct in-memory runtime-only state changes.
@@ -979,24 +973,17 @@ We should extend it incrementally, keeping the runtime-first architecture and av
 #### Current implementation status (March 31, 2026)
 
 - D1 MVP is implemented:
-  - Runtime protocol supports `preview.hitTest` alongside `preview.capture`.
-  - Live Preview pane supports click hit-test, element metadata display, and overlay bounds highlight.
 - D2 initial bridge is implemented:
   - Clicking a selected preview element now attempts source reveal in XAML.
   - Mapping now tries `axsg/hotreload/mapDocument` first, then falls back to local heuristics (`x:Name`/`Name`, then element type tag).
 - AXSG map results are now confidence-gated in the extension; low-confidence mappings are rejected in favor of fallback matching with a status hint.
-- Cursor movement in XAML now attempts reverse sync into Live Preview using runtime `preview.find` (name/type heuristic query).
 - Reverse sync currently prefers named elements only and debounces cursor events to reduce noisy runtime traffic.
 - Reverse sync now enforces ambiguity guards (`Name` uniqueness check in source + runtime ambiguity rejection) and shows throttled status hints when sync is skipped.
-- D3 read path has started: selected elements now surface a read-only runtime property snapshot in Live Preview (`Text`, brushes, size, margin, alignment, enabled/visibility).
 - D3 write MVP is now available for a safe subset:
-  - Live Preview can apply `Text`, `Background`, and `Foreground` changes by editing source XAML attributes.
   - Writes are ambiguity-safe (require unique element match) and keep XAML as source of truth.
   - Brush edits are normalized/validated conservatively before writing.
   - Per-control capability gating is enforced from runtime inspection (buttons disable for unsupported properties; extension revalidates on apply).
-  - Live Preview now includes optional `Auto Push Hot Reload` to push successful property edits to the running app immediately.
 - D4 MVP is now implemented:
-  - Live Preview pane accepts toolbox/snippet drops on the preview surface.
   - Drop point is resolved via runtime `preview.hitTest`, then translated into source-of-truth XAML insertion edits.
   - Container-aware placement rules are enforced for `Panel`, `ItemsControl`, and `ContentControl` families.
   - Custom-control namespace injection and prefix resolution are reused during insertion.
@@ -1010,7 +997,6 @@ Goal: click in preview and identify the corresponding live element/XAML node.
 
 Runtime protocol additions:
 
-- `preview.capture` (existing) + metadata extension:
   - image dimensions
   - root id
   - optional element bounds map
@@ -1041,7 +1027,6 @@ Extension/AXSG additions:
 
 Editor integration:
 
-- `Live Preview` selection reveals/highlights corresponding XAML range
 - active XAML cursor updates preview selection when mapping is unambiguous
 
 Success gate:
