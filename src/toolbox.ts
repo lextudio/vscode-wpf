@@ -130,14 +130,8 @@ function builtIn(displayName: string, defaultSnippet: string): ToolboxItem {
 
 export function registerToolbox(context: vscode.ExtensionContext): WpfToolboxUiController {
   const provider = new WpfToolboxViewProvider(context);
-  const propertyGridProvider = new WpfPropertyGridViewProvider(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('wpf.toolbox', provider, {
-      webviewOptions: { retainContextWhenHidden: true },
-    })
-  );
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('wpf.propertyGrid', propertyGridProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     })
   );
@@ -153,8 +147,8 @@ export function registerToolbox(context: vscode.ExtensionContext): WpfToolboxUiC
   );
 
   return {
-    updatePropertyGrid: (entry: WpfPropertyGridEntry) => propertyGridProvider.updateSelection(entry),
-    clearPropertyGrid: (message?: string) => propertyGridProvider.clear(message),
+    updatePropertyGrid: (_entry: WpfPropertyGridEntry) => { },
+    clearPropertyGrid: (_message?: string) => { },
   };
 }
 
@@ -167,52 +161,6 @@ class WpfToolboxViewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [this.context.extensionUri],
     };
     webviewView.webview.html = getWebviewHtml(webviewView.webview);
-  }
-}
-
-class WpfPropertyGridViewProvider implements vscode.WebviewViewProvider {
-  private view: vscode.WebviewView | undefined;
-  private pendingMessage:
-    | { readonly type: 'property'; readonly entry: WpfPropertyGridEntry }
-    | { readonly type: 'clear'; readonly message: string }
-    | undefined;
-
-  constructor(private readonly context: vscode.ExtensionContext) { }
-
-  resolveWebviewView(webviewView: vscode.WebviewView): void {
-    this.view = webviewView;
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [this.context.extensionUri],
-    };
-    webviewView.webview.html = getPropertyGridHtml(webviewView.webview);
-    if (this.pendingMessage) {
-      void webviewView.webview.postMessage(this.pendingMessage);
-    }
-    webviewView.onDidDispose(() => {
-      if (this.view === webviewView) {
-        this.view = undefined;
-      }
-    });
-  }
-
-  updateSelection(entry: WpfPropertyGridEntry): void {
-    const message = { type: 'property' as const, entry };
-    this.pendingMessage = message;
-    if (this.view) {
-      void this.view.webview.postMessage(message);
-    }
-  }
-
-  clear(message?: string): void {
-    const payload = {
-      type: 'clear' as const,
-      message: message ?? 'Select a control in Live Preview to inspect runtime properties.',
-    };
-    this.pendingMessage = payload;
-    if (this.view) {
-      void this.view.webview.postMessage(payload);
-    }
   }
 }
 
@@ -602,137 +550,6 @@ function getWebviewHtml(webview: vscode.Webview): string {
 
       app.appendChild(wrapper);
     }
-  </script>
-</body>
-</html>`;
-}
-
-function getPropertyGridHtml(webview: vscode.Webview): string {
-  const nonce = createNonce();
-  const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';`;
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="${csp}">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>
-    :root {
-      color-scheme: light dark;
-    }
-    body {
-      margin: 0;
-      padding: 8px;
-      font-family: var(--vscode-font-family);
-      color: var(--vscode-foreground);
-      background: var(--vscode-sideBar-background);
-    }
-    .state {
-      color: var(--vscode-descriptionForeground);
-      font-size: 12px;
-      line-height: 1.4;
-    }
-    .header {
-      border: 1px solid var(--vscode-editorWidget-border);
-      background: var(--vscode-editor-background);
-      border-radius: 6px;
-      padding: 6px 8px;
-      margin-bottom: 8px;
-      font-size: 12px;
-      line-height: 1.4;
-      word-break: break-word;
-    }
-    .grid {
-      border: 1px solid var(--vscode-editorWidget-border);
-      border-radius: 6px;
-      overflow: hidden;
-      background: var(--vscode-editor-background);
-    }
-    .row {
-      display: grid;
-      grid-template-columns: 120px 1fr;
-      gap: 8px;
-      padding: 6px 8px;
-      border-bottom: 1px solid var(--vscode-editorWidget-border);
-      font-size: 12px;
-      line-height: 1.35;
-    }
-    .row:last-child {
-      border-bottom: none;
-    }
-    .k {
-      color: var(--vscode-descriptionForeground);
-    }
-    .v {
-      color: var(--vscode-foreground);
-      word-break: break-word;
-    }
-  </style>
-</head>
-<body>
-  <div id="state" class="state">Select a control in Live Preview to inspect runtime properties.</div>
-  <div id="content" style="display:none;">
-    <div id="header" class="header"></div>
-    <div id="grid" class="grid"></div>
-  </div>
-  <script nonce="${nonce}">
-    const state = document.getElementById('state');
-    const content = document.getElementById('content');
-    const header = document.getElementById('header');
-    const grid = document.getElementById('grid');
-
-    function esc(value) {
-      return String(value ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    }
-
-    function row(key, value) {
-      return '<div class="row"><div class="k">' + esc(key) + '</div><div class="v">' + esc(value) + '</div></div>';
-    }
-
-    function render(entry) {
-      state.style.display = 'none';
-      content.style.display = 'block';
-      const displayName = entry.elementName && entry.elementName.trim().length > 0
-        ? entry.elementName
-        : '(unnamed)';
-      header.innerHTML =
-        '<strong>' + esc(entry.typeName || '(unknown)') + '</strong><br />' +
-        'Name: ' + esc(displayName);
-      grid.innerHTML =
-        row('Text', entry.text || '(n/a)') +
-        row('Background', entry.background || '(n/a)') +
-        row('Foreground', entry.foreground || '(n/a)') +
-        row('Width', entry.width || '(auto)') +
-        row('Height', entry.height || '(auto)') +
-        row('ActualWidth', entry.actualWidth || '0') +
-        row('ActualHeight', entry.actualHeight || '0') +
-        row('Margin', entry.margin || '(n/a)') +
-        row('HorizontalAlign', entry.horizontalAlignment || '(n/a)') +
-        row('VerticalAlign', entry.verticalAlignment || '(n/a)') +
-        row('IsEnabled', entry.isEnabled || '(n/a)') +
-        row('Visibility', entry.visibility || '(n/a)');
-    }
-
-    function clear(message) {
-      content.style.display = 'none';
-      state.style.display = 'block';
-      state.textContent = message || 'Select a control in Live Preview to inspect runtime properties.';
-    }
-
-    window.addEventListener('message', event => {
-      const msg = event.data || {};
-      if (msg.type === 'property' && msg.entry) {
-        render(msg.entry);
-      } else if (msg.type === 'clear') {
-        clear(msg.message);
-      }
-    });
   </script>
 </body>
 </html>`;
