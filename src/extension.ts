@@ -39,6 +39,7 @@ import {
   startRuntimeHotReloadSession,
 } from './runtimeHotReload';
 import { registerToolbox } from './toolbox';
+import { startReviewPromptScheduler } from './reviewPrompt';
 
 // Per-workspace-folder project selection, keyed by workspace folder path.
 const selectedProjects = new Map<string, string>();
@@ -65,6 +66,7 @@ export function activate(context: vscode.ExtensionContext): void {
   startLanguageServer(context);
   registerRuntimeHotReload(context);
   registerToolbox(context);
+  startReviewPromptScheduler(context);
 
   // Handle event handler creation requests from the visual designer.
   setEventHandlerCallback(async msg => {
@@ -1200,5 +1202,4 @@ function collectProjectXamlFiles(projectPath: string): string[] {
 
   return Array.from(collected).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
-
 
