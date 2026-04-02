@@ -1,9 +1,9 @@
-namespace XamlLanguageServer.Wpf.Wpf;
+namespace XamlToCSharpGenerator.WPF.Framework;
 
 /// <summary>
 /// Well-known XML namespace URIs used in WPF XAML files.
 /// </summary>
-internal static class WpfXmlNamespaces
+public static class WpfXmlNamespaces
 {
     /// <summary>http://schemas.microsoft.com/winfx/2006/xaml/presentation</summary>
     public const string Presentation =

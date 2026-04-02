@@ -2,7 +2,7 @@ using System.Collections.Immutable;
 using XamlToCSharpGenerator.Core.Models;
 using XamlToCSharpGenerator.Framework.Abstractions;
 
-namespace XamlLanguageServer.Wpf.Wpf;
+namespace XamlToCSharpGenerator.WPF.Framework;
 
 /// <summary>
 /// WPF has no transform rule files (Avalonia uses .axamlx; WPF has no equivalent).
@@ -10,7 +10,7 @@ namespace XamlLanguageServer.Wpf.Wpf;
 /// </summary>
 internal sealed class WpfFrameworkTransformProvider : IXamlFrameworkTransformProvider
 {
-    public static WpfFrameworkTransformProvider Instance { get; } = new();
+    internal static WpfFrameworkTransformProvider Instance { get; } = new();
     private WpfFrameworkTransformProvider() { }
 
     public XamlFrameworkTransformRuleResult ParseTransformRule(XamlFrameworkTransformRuleInput input) =>

@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.Threading;
 using XamlLanguageServer.Wpf.Diagnostics;
 using XamlLanguageServer.Wpf.Workspace;
-using XamlLanguageServer.Wpf.Wpf;
+using XamlToCSharpGenerator.WPF.Framework;
 using XamlToCSharpGenerator.LanguageService;
 using XamlToCSharpGenerator.LanguageService.Symbols;
 using XamlToCSharpGenerator.LanguageService.Workspace;
