@@ -140,13 +140,50 @@ public sealed class WpfSemanticBinderPhase2Tests
         Assert.Contains(diagnostics, d => d.Id == "WXSG0102");
     }
 
-    private static GeneratorOptions CreateOptions(string? assemblyName)
+    [Fact]
+    public void Bind_Parses_Inline_CSharp_Expression_Markup()
+    {
+        var compilation = CreateWpfCompilation();
+        var parser = new SimpleXamlDocumentParser();
+
+        var xaml =
+            $"<Window xmlns=\"{PresentationNs}\" xmlns:x=\"{XamlNs}\" x:Class=\"TestWpf.Controls.MainWindow\" " +
+            "Title=\"{cs: string.Concat(&quot;Hello&quot;, &quot; WXSG&quot;)}\" />";
+
+        var (document, parseDiagnostics) = parser.Parse(new XamlFileInput(
+            FilePath: "/tmp/MainWindow.xaml",
+            TargetPath: "MainWindow.xaml",
+            SourceItemGroup: "Page",
+            Text: xaml));
+
+        Assert.NotNull(document);
+        Assert.Empty(parseDiagnostics.Where(static d => d.IsError));
+
+        var binder = new WpfSemanticBinder();
+        var (viewModel, diagnostics) = binder.Bind(
+            document!,
+            compilation,
+            CreateOptions(compilation.AssemblyName, csharpExpressionsEnabled: true),
+            XamlTransformConfiguration.Empty);
+
+        Assert.NotNull(viewModel);
+        Assert.Empty(diagnostics.Where(static d => d.IsError));
+
+        var titleAssignment = Assert.Single(viewModel!.RootObject.PropertyAssignments.Where(a => a.PropertyName == "Title"));
+        Assert.Equal(ResolvedValueKind.MarkupExtension, titleAssignment.ValueKind);
+        Assert.Equal("string.Concat(\"Hello\", \" WXSG\")", titleAssignment.ValueExpression);
+    }
+
+    private static GeneratorOptions CreateOptions(
+        string? assemblyName,
+        bool csharpExpressionsEnabled = false,
+        bool implicitCSharpExpressionsEnabled = false)
     {
         return new GeneratorOptions(
             IsEnabled: true,
             UseCompiledBindingsByDefault: false,
-            CSharpExpressionsEnabled: false,
-            ImplicitCSharpExpressionsEnabled: false,
+            CSharpExpressionsEnabled: csharpExpressionsEnabled,
+            ImplicitCSharpExpressionsEnabled: implicitCSharpExpressionsEnabled,
             CreateSourceInfo: false,
             StrictMode: false,
             HotReloadEnabled: false,

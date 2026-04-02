@@ -8,6 +8,8 @@ using Microsoft.CodeAnalysis;
 using XamlToCSharpGenerator.Core.Abstractions;
 using XamlToCSharpGenerator.Core.Models;
 using XamlToCSharpGenerator.Core.Parsing;
+using XamlToCSharpGenerator.ExpressionSemantics;
+using XamlToCSharpGenerator.MiniLanguageParsing.Bindings;
 
 namespace XamlToCSharpGenerator.WPF.Binding;
 
@@ -36,6 +38,7 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
     private const string WxsgUnknownTypeDiagnosticId = "WXSG0101";
     private const string WxsgUnknownPropertyDiagnosticId = "WXSG0102";
     private const string WxsgInvalidEventHandlerDiagnosticId = "WXSG0103";
+    private static readonly MarkupExpressionParser MarkupParser = new();
 
     // Cache the XmlnsDefinition map per compilation to avoid repeated assembly scans.
     private static readonly ConditionalWeakTable<Compilation, XmlnsDefinitionCacheEntry> XmlnsCache = new();
@@ -53,7 +56,14 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
 
         var diagnostics = ImmutableArray.CreateBuilder<DiagnosticInfo>();
         var xmlnsMap = GetOrBuildXmlnsDefinitionMap(compilation);
-        var context = new BindingContext(document, compilation, xmlnsMap, diagnostics, options.StrictMode);
+        var context = new BindingContext(
+            document,
+            compilation,
+            xmlnsMap,
+            diagnostics,
+            options.StrictMode,
+            options.CSharpExpressionsEnabled,
+            options.ImplicitCSharpExpressionsEnabled);
 
         var rootNode = BindObjectNode(document.RootObject, context);
         var namedElements = ResolveNamedElements(document.NamedElements, context);
@@ -191,9 +201,10 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
             if (ownerQualifiedInstanceProperty is not null &&
                 IsSameOrDerivedFrom(objectType, ownerType))
             {
+                var valueConversion = ConvertAssignmentValue(assignment.Value, context);
                 assignments.Add(new ResolvedPropertyAssignment(
                     PropertyName: ownerQualifiedInstanceProperty.Name,
-                    ValueExpression: AsStringLiteral(assignment.Value),
+                    ValueExpression: valueConversion.ValueExpression,
                     ClrPropertyOwnerTypeName: ownerQualifiedInstanceProperty.ContainingType
                         .ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
                     ClrPropertyTypeName: ownerQualifiedInstanceProperty.Type
@@ -201,7 +212,7 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
                     Line: assignment.Line,
                     Column: assignment.Column,
                     Condition: assignment.Condition,
-                    ValueKind: ResolvedValueKind.Literal));
+                    ValueKind: valueConversion.ValueKind));
                 return;
             }
 
@@ -235,15 +246,16 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
                 return;
             }
 
+            var attachedValueConversion = ConvertAssignmentValue(assignment.Value, context);
             assignments.Add(new ResolvedPropertyAssignment(
                 PropertyName: attachedPropertyName,
-                ValueExpression: AsStringLiteral(assignment.Value),
+                ValueExpression: attachedValueConversion.ValueExpression,
                 ClrPropertyOwnerTypeName: ToDisplayName(ownerType),
                 ClrPropertyTypeName: attachedPropertyType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
                 Line: assignment.Line,
                 Column: assignment.Column,
                 Condition: assignment.Condition,
-                ValueKind: ResolvedValueKind.Literal,
+                ValueKind: attachedValueConversion.ValueKind,
                 FrameworkPayload: new ResolvedFrameworkPropertyPayload(
                     FrameworkId: "WPF",
                     PropertyOwnerTypeName: ToDisplayName(ownerType),
@@ -281,15 +293,16 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
             return;
         }
 
+        var directValueConversion = ConvertAssignmentValue(assignment.Value, context);
         assignments.Add(new ResolvedPropertyAssignment(
             PropertyName: property.Name,
-            ValueExpression: AsStringLiteral(assignment.Value),
+            ValueExpression: directValueConversion.ValueExpression,
             ClrPropertyOwnerTypeName: property.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             ClrPropertyTypeName: property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             Line: assignment.Line,
             Column: assignment.Column,
             Condition: assignment.Condition,
-            ValueKind: ResolvedValueKind.Literal));
+            ValueKind: directValueConversion.ValueKind));
     }
 
     private static ResolvedPropertyElementAssignment BindPropertyElement(
@@ -822,6 +835,143 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
         return AsStringLiteral(key.Trim());
     }
 
+    private static (string ValueExpression, ResolvedValueKind ValueKind) ConvertAssignmentValue(
+        string rawValue,
+        BindingContext context)
+    {
+        if (TryParseInlineCSharpExpression(rawValue, context, out var csharpExpression))
+        {
+            return (csharpExpression, ResolvedValueKind.MarkupExtension);
+        }
+
+        return (AsStringLiteral(rawValue), ResolvedValueKind.Literal);
+    }
+
+    private static bool TryParseInlineCSharpExpression(
+        string value,
+        BindingContext context,
+        out string csharpExpression)
+    {
+        csharpExpression = string.Empty;
+
+        if (TryParseCsPrefixExpression(value, out csharpExpression))
+        {
+            return true;
+        }
+
+        if (context.CSharpExpressionsEnabled &&
+            CSharpMarkupExpressionSemantics.TryParseMarkupExpression(
+                value,
+                context.ImplicitCSharpExpressionsEnabled,
+                static candidate =>
+                {
+                    if (!MarkupParser.TryParseMarkupExtension(candidate, out var info))
+                    {
+                        return false;
+                    }
+
+                    return XamlMarkupExtensionNameSemantics.Classify(info.Name) != XamlMarkupExtensionKind.CSharp;
+                },
+                out var rawParsedExpression,
+                out _,
+                out _))
+        {
+            csharpExpression = CSharpExpressionTextSemantics.NormalizeExpressionCode(rawParsedExpression);
+            if (csharpExpression.Length > 0)
+            {
+                return true;
+            }
+        }
+
+        if (!MarkupParser.TryParseMarkupExtension(value, out var markupExtension))
+        {
+            return false;
+        }
+
+        if (XamlMarkupExtensionNameSemantics.Classify(markupExtension.Name) != XamlMarkupExtensionKind.CSharp)
+        {
+            return false;
+        }
+
+        string? rawMarkupExpression = null;
+        if (markupExtension.NamedArguments.TryGetValue("Code", out var namedCode) ||
+            markupExtension.NamedArguments.TryGetValue("Expression", out namedCode))
+        {
+            rawMarkupExpression = namedCode;
+        }
+        else if (markupExtension.PositionalArguments.Length > 0)
+        {
+            rawMarkupExpression = markupExtension.PositionalArguments[0];
+        }
+
+        if (string.IsNullOrWhiteSpace(rawMarkupExpression))
+        {
+            return false;
+        }
+
+        csharpExpression = CSharpExpressionTextSemantics.NormalizeExpressionCode(
+            XamlQuotedValueSemantics.TrimAndUnquote(rawMarkupExpression));
+        return csharpExpression.Length > 0;
+    }
+
+    private static bool TryParseCsPrefixExpression(string value, out string csharpExpression)
+    {
+        csharpExpression = string.Empty;
+        var trimmed = value.Trim();
+        const string prefixedOpen = "{cs:";
+        const string csharpOpen = "{csharp:";
+
+        if (trimmed.EndsWith("}", StringComparison.Ordinal))
+        {
+            string? expression = null;
+            if (trimmed.StartsWith(prefixedOpen, StringComparison.OrdinalIgnoreCase))
+            {
+                expression = trimmed.Substring(prefixedOpen.Length, trimmed.Length - prefixedOpen.Length - 1);
+            }
+            else if (trimmed.StartsWith(csharpOpen, StringComparison.OrdinalIgnoreCase))
+            {
+                expression = trimmed.Substring(csharpOpen.Length, trimmed.Length - csharpOpen.Length - 1);
+            }
+
+            if (expression is not null)
+            {
+                csharpExpression = CSharpExpressionTextSemantics.NormalizeExpressionCode(
+                    XamlQuotedValueSemantics.TrimAndUnquote(expression.Trim()));
+                if (csharpExpression.Length > 0)
+                {
+                    return true;
+                }
+            }
+        }
+
+        if (!MarkupExpressionEnvelopeSemantics.TryExtractInnerContent(value, out var inner))
+        {
+            return false;
+        }
+
+        var trimmedInner = inner.TrimStart();
+        const string csPrefix = "cs:";
+        const string csharpPrefix = "csharp:";
+
+        string expressionBody;
+        if (trimmedInner.StartsWith(csPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            expressionBody = trimmedInner.Substring(csPrefix.Length);
+        }
+        else if (trimmedInner.StartsWith(csharpPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            expressionBody = trimmedInner.Substring(csharpPrefix.Length);
+        }
+        else
+        {
+            return false;
+        }
+
+        csharpExpression = CSharpExpressionTextSemantics.NormalizeExpressionCode(
+            XamlQuotedValueSemantics.TrimAndUnquote(expressionBody.Trim()));
+        return csharpExpression.Length > 0;
+    }
+
     private static string AsStringLiteral(string value)
     {
         return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
@@ -917,13 +1067,17 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
             Compilation compilation,
             XmlnsDefinitionCacheEntry xmlnsMap,
             ImmutableArray<DiagnosticInfo>.Builder diagnostics,
-            bool strictMode)
+            bool strictMode,
+            bool csharpExpressionsEnabled,
+            bool implicitCSharpExpressionsEnabled)
         {
             Document = document;
             Compilation = compilation;
             XmlnsMap = xmlnsMap;
             Diagnostics = diagnostics;
             StrictMode = strictMode;
+            CSharpExpressionsEnabled = csharpExpressionsEnabled;
+            ImplicitCSharpExpressionsEnabled = implicitCSharpExpressionsEnabled;
         }
 
         public XamlDocumentModel Document { get; }
@@ -935,6 +1089,10 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
         public ImmutableArray<DiagnosticInfo>.Builder Diagnostics { get; }
 
         public bool StrictMode { get; }
+
+        public bool CSharpExpressionsEnabled { get; }
+
+        public bool ImplicitCSharpExpressionsEnabled { get; }
 
         public void AddUnknownTypeDiagnostic(string xmlTypeName, int line, int column)
         {

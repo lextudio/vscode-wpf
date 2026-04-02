@@ -129,6 +129,14 @@ Goals:
 - Compiled bindings: `{Binding Path=Name, Mode=OneWay}` → type-checked at compile time.
 - Reuse `XamlToCSharpGenerator.ExpressionSemantics` (already shared with AXSG).
 
+Progress (2026-04-02):
+- ✅ Implemented: WXSG binder now parses inline C# attribute expression markup
+  (`{cs: ...}`, `{csharp: ...}`, and explicit expression markup supported by
+  `CSharpMarkupExpressionSemantics`) and emits raw C# expression assignments.
+- ✅ Implemented: WXSG now references `XamlToCSharpGenerator.ExpressionSemantics`
+  in WPF/generator projects; sample analyzer wiring updated accordingly.
+- ⏳ Pending: compiled-binding type-checking pipeline for WPF.
+
 ## MSBuild Integration
 
 Add this to a WPF project to opt in (Phase 1):
@@ -163,4 +171,4 @@ alongside `XamlToCSharpGenerator.Build`) will:
 | Full semantic binding (Phase 2) | ✅ Implemented |
 | Pure C# emission (Phase 3) | ✅ Implemented |
 | Hot reload (Phase 4) | 🚧 In progress (generated hook + runtime invocation implemented) |
-| C# expressions (Phase 5) | 🚧 TODO |
+| C# expressions (Phase 5) | 🚧 In progress (inline expression markup implemented) |

@@ -60,13 +60,52 @@ public sealed class WpfCodeEmitterPhase3Tests
         Assert.Contains("global::TestWpf.Controls.Grid.SetRow", source, StringComparison.Ordinal);
     }
 
-    private static GeneratorOptions CreateOptions(string? assemblyName)
+    [Fact]
+    public void Emit_Uses_Inline_CSharp_Expression_For_Property_Assignment()
+    {
+        var compilation = CreateWpfCompilation();
+        var parser = new SimpleXamlDocumentParser();
+        var binder = new WpfSemanticBinder();
+        var emitter = new WpfCodeEmitter();
+
+        var xaml =
+            $"<Window xmlns=\"{PresentationNs}\" xmlns:x=\"{XamlNs}\" x:Class=\"TestWpf.Controls.MainWindow\" " +
+            "Title=\"{cs: string.Concat(&quot;Hello&quot;, &quot; WXSG&quot;)}\" />";
+
+        var (document, parseDiagnostics) = parser.Parse(new XamlFileInput(
+            FilePath: "/tmp/MainWindow.xaml",
+            TargetPath: "MainWindow.xaml",
+            SourceItemGroup: "Page",
+            Text: xaml));
+
+        Assert.NotNull(document);
+        Assert.Empty(parseDiagnostics.Where(static d => d.IsError));
+
+        var (viewModel, diagnostics) = binder.Bind(
+            document!,
+            compilation,
+            CreateOptions(compilation.AssemblyName, csharpExpressionsEnabled: true),
+            XamlTransformConfiguration.Empty);
+
+        Assert.NotNull(viewModel);
+        Assert.Empty(diagnostics.Where(static d => d.IsError));
+
+        var (_, source) = emitter.Emit(viewModel!);
+
+        Assert.Contains("__root.Title = string.Concat(\"Hello\", \" WXSG\");", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("__root.Title = \"{cs:", source, StringComparison.Ordinal);
+    }
+
+    private static GeneratorOptions CreateOptions(
+        string? assemblyName,
+        bool csharpExpressionsEnabled = false,
+        bool implicitCSharpExpressionsEnabled = false)
     {
         return new GeneratorOptions(
             IsEnabled: true,
             UseCompiledBindingsByDefault: false,
-            CSharpExpressionsEnabled: false,
-            ImplicitCSharpExpressionsEnabled: false,
+            CSharpExpressionsEnabled: csharpExpressionsEnabled,
+            ImplicitCSharpExpressionsEnabled: implicitCSharpExpressionsEnabled,
             CreateSourceInfo: false,
             StrictMode: false,
             HotReloadEnabled: false,
