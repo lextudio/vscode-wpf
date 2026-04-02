@@ -1,0 +1,18 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "& (& '${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe' -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\\**\\Bin\\MSBuild.exe' | Select-Object -First 1) /property:GenerateFullPaths=true /t:build /p:Configuration=Debug /p:Platform=ARM64 '${workspaceFolder}/sample.csproj'",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "silent"
+            },
+            "problemMatcher": "$msCompile"
+        }
+    ]
+}

@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": ".NET Framework Launch",
+            "type": "clr",
+            "request": "launch",
+            "program": "${workspaceFolder}/bin/Debug/sample.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "preLaunchTask": "build"
+        }
+    ]
+}
