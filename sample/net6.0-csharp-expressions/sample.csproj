@@ -24,36 +24,23 @@
       (see MsBuildConfigurationSource). Without it the generator is a no-op.
     -->
     <XamlSourceGenEnabled>true</XamlSourceGenEnabled>
+
+    <!--
+      Local NuGet package feed for WXSG packages built from this repo.
+      Populate with:
+        dotnet pack src\XamlToCSharpGenerator.Generator.WPF\XamlToCSharpGenerator.Generator.WPF.csproj -o artifacts\local-packages
+    -->
+    <LocalNuGetPackagesDir>$(MSBuildProjectDirectory)\..\..\artifacts\local-packages</LocalNuGetPackagesDir>
+    <RestoreSources>$(LocalNuGetPackagesDir);$(RestoreSources)</RestoreSources>
   </PropertyGroup>
 
-  <!--
-    Reference the WXSG source generator and all its transitive dependencies as analyzers.
-    (In production projects a single NuGet package reference is enough because the .nupkg
-    bundles all DLLs in analyzers/dotnet/cs/ — but for a local project reference MSBuild
-    only adds the direct output DLL, so each dependency must also be added explicitly.)
-  -->
   <ItemGroup>
-    <ProjectReference Include="..\..\src\XamlToCSharpGenerator.Generator.WPF\XamlToCSharpGenerator.Generator.WPF.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
-    <ProjectReference Include="..\..\src\XamlToCSharpGenerator.WPF\XamlToCSharpGenerator.WPF.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
-    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Compiler\XamlToCSharpGenerator.Compiler.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
-    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Core\XamlToCSharpGenerator.Core.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
-    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.ExpressionSemantics\XamlToCSharpGenerator.ExpressionSemantics.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
-    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Framework.Abstractions\XamlToCSharpGenerator.Framework.Abstractions.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
-    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.MiniLanguageParsing\XamlToCSharpGenerator.MiniLanguageParsing.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
+    <!--
+      Local package consumption: WXSG generator + bundled analyzer dependencies.
+      Note: Build.WPF package is still TODO, so this sample keeps explicit WXSG
+      AdditionalFiles/Page wiring below.
+    -->
+    <PackageReference Include="XamlToCSharpGenerator.Generator.WPF" Version="1.0.0-local.1" PrivateAssets="all" />
   </ItemGroup>
 
   <!--

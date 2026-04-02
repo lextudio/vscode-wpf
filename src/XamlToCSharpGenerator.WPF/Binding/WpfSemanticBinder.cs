@@ -29,6 +29,9 @@ namespace XamlToCSharpGenerator.WPF.Binding;
 /// </summary>
 public sealed class WpfSemanticBinder : IXamlSemanticBinder
 {
+    private const string WpfPresentationXmlNamespace =
+        "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
     private const string WpfXmlnsDefinitionAttributeMetadataName =
         "System.Windows.Markup.XmlnsDefinitionAttribute";
 
@@ -39,6 +42,18 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
     private const string WxsgUnknownPropertyDiagnosticId = "WXSG0102";
     private const string WxsgInvalidEventHandlerDiagnosticId = "WXSG0103";
     private static readonly MarkupExpressionParser MarkupParser = new();
+    private static readonly string[] WpfPresentationFallbackClrNamespaces =
+    {
+        "System.Windows",
+        "System.Windows.Controls",
+        "System.Windows.Controls.Primitives",
+        "System.Windows.Documents",
+        "System.Windows.Input",
+        "System.Windows.Media",
+        "System.Windows.Media.Animation",
+        "System.Windows.Navigation",
+        "System.Windows.Shapes"
+    };
 
     // Cache the XmlnsDefinition map per compilation to avoid repeated assembly scans.
     private static readonly ConditionalWeakTable<Compilation, XmlnsDefinitionCacheEntry> XmlnsCache = new();
@@ -996,19 +1011,13 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
 
     private static XmlnsDefinitionCacheEntry BuildXmlnsDefinitionMap(Compilation compilation)
     {
-        var attrType = compilation.GetTypeByMetadataName(WpfXmlnsDefinitionAttributeMetadataName);
-        if (attrType is null)
-        {
-            return XmlnsDefinitionCacheEntry.Empty;
-        }
-
         var map = new Dictionary<string, List<XmlnsDefinitionMapping>>(StringComparer.Ordinal);
 
         foreach (var assembly in EnumerateAssemblies(compilation))
         {
             foreach (var attr in assembly.GetAttributes())
             {
-                if (!SymbolEqualityComparer.Default.Equals(attr.AttributeClass, attrType) ||
+                if (!IsXmlnsDefinitionAttribute(attr) ||
                     attr.ConstructorArguments.Length < 2 ||
                     attr.ConstructorArguments[0].Value is not string xmlNamespace ||
                     attr.ConstructorArguments[1].Value is not string clrNamespace)
@@ -1040,7 +1049,26 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
             }
         }
 
+        if (!map.ContainsKey(WpfPresentationXmlNamespace))
+        {
+            var fallbackMappings = new List<XmlnsDefinitionMapping>(WpfPresentationFallbackClrNamespaces.Length);
+            foreach (var clrNamespace in WpfPresentationFallbackClrNamespaces)
+            {
+                fallbackMappings.Add(new XmlnsDefinitionMapping(clrNamespace, assemblyName: null));
+            }
+
+            map[WpfPresentationXmlNamespace] = fallbackMappings;
+        }
+
         return new XmlnsDefinitionCacheEntry(map);
+    }
+
+    private static bool IsXmlnsDefinitionAttribute(AttributeData attribute)
+    {
+        return string.Equals(
+            attribute.AttributeClass?.ToDisplayString(),
+            WpfXmlnsDefinitionAttributeMetadataName,
+            StringComparison.Ordinal);
     }
 
     private static IEnumerable<IAssemblySymbol> EnumerateAssemblies(Compilation compilation)

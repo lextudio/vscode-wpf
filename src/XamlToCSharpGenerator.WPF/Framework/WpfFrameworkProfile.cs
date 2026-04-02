@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using XamlToCSharpGenerator.Core.Abstractions;
@@ -28,6 +30,12 @@ namespace XamlToCSharpGenerator.WPF.Framework;
 /// </summary>
 public sealed class WpfFrameworkProfile : IXamlFrameworkProfile
 {
+    private const string AvaloniaImplicitDefaultXmlns =
+        "https://github.com/avaloniaui";
+
+    private const string WpfXmlnsPrefixAttributeMetadataName =
+        "System.Windows.Markup.XmlnsPrefixAttribute";
+
     private static readonly IXamlFrameworkBuildContract BuildContractInstance =
         WpfFrameworkBuildContract.Instance;
 
@@ -63,15 +71,177 @@ public sealed class WpfFrameworkProfile : IXamlFrameworkProfile
         ImmutableArray<IXamlDocumentEnricher>.Empty;
 
     /// <summary>
-    /// WPF does not use assembly-level global xmlns prefixes, so the prefix map is empty.
-    /// The implicit default xmlns points to the WPF presentation namespace so that the
-    /// parser tolerates files that omit the explicit default xmlns declaration.
+    /// MAUI-style "simpler XAML" support for WXSG:
+    /// 1. Implicit default namespace points to WPF presentation.
+    /// 2. Standard prefixes x:/d:/mc: can be globalized.
+    /// 3. Global prefixes can come from assembly-level XmlnsPrefix attributes and
+    ///    from GlobalXmlnsPrefixes options.
     /// </summary>
     public XamlFrameworkParserSettings BuildParserSettings(Compilation compilation, GeneratorOptions options) =>
-        new(
-            globalXmlnsPrefixes: ImmutableDictionary<string, string>.Empty,
-            allowImplicitDefaultXmlns: false,
-            implicitDefaultXmlns: WpfXmlNamespaces.Presentation);
+        BuildSimplerXamlParserSettings(compilation, options);
+
+    private static XamlFrameworkParserSettings BuildSimplerXamlParserSettings(
+        Compilation compilation,
+        GeneratorOptions options)
+    {
+        var globalPrefixes = ImmutableDictionary.CreateBuilder<string, string>(StringComparer.Ordinal);
+        var allowImplicitXmlns = true;
+
+        foreach (var assembly in EnumerateAssemblies(compilation))
+        {
+            foreach (var attribute in assembly.GetAttributes())
+            {
+                if (!IsXmlnsPrefixAttribute(attribute))
+                {
+                    continue;
+                }
+
+                if (attribute.ConstructorArguments.Length < 2 ||
+                    attribute.ConstructorArguments[0].Value is not string xmlNamespace ||
+                    attribute.ConstructorArguments[1].Value is not string prefix ||
+                    string.IsNullOrWhiteSpace(prefix) ||
+                    string.IsNullOrWhiteSpace(xmlNamespace))
+                {
+                    continue;
+                }
+
+                globalPrefixes[prefix.Trim()] = xmlNamespace.Trim();
+            }
+        }
+
+        foreach (var entry in ParseGlobalXmlnsPrefixesProperty(options.GlobalXmlnsPrefixes))
+        {
+            globalPrefixes[entry.Key] = entry.Value;
+        }
+
+        if (allowImplicitXmlns &&
+            options.ImplicitStandardXmlnsPrefixesEnabled)
+        {
+            AddImplicitPrefix(globalPrefixes, "x", WpfXmlNamespaces.Xaml);
+            AddImplicitPrefix(globalPrefixes, "d", WpfXmlNamespaces.BlendDesign);
+            AddImplicitPrefix(globalPrefixes, "mc", WpfXmlNamespaces.MarkupCompatibility);
+        }
+
+        var implicitDefaultXmlns = string.IsNullOrWhiteSpace(options.ImplicitDefaultXmlns) ||
+                                   string.Equals(
+                                       options.ImplicitDefaultXmlns,
+                                       AvaloniaImplicitDefaultXmlns,
+                                       StringComparison.Ordinal)
+            ? WpfXmlNamespaces.Presentation
+            : options.ImplicitDefaultXmlns;
+
+        if (allowImplicitXmlns &&
+            !globalPrefixes.ContainsKey(string.Empty))
+        {
+            globalPrefixes[string.Empty] = implicitDefaultXmlns;
+        }
+
+        return new XamlFrameworkParserSettings(
+            globalPrefixes.ToImmutable(),
+            allowImplicitXmlns,
+            implicitDefaultXmlns);
+    }
+
+    private static void AddImplicitPrefix(
+        ImmutableDictionary<string, string>.Builder globalPrefixes,
+        string prefix,
+        string xmlNamespace)
+    {
+        if (!globalPrefixes.ContainsKey(prefix))
+        {
+            globalPrefixes[prefix] = xmlNamespace;
+        }
+    }
+
+    private static bool IsXmlnsPrefixAttribute(AttributeData attribute)
+    {
+        return string.Equals(
+            attribute.AttributeClass?.ToDisplayString(),
+            WpfXmlnsPrefixAttributeMetadataName,
+            StringComparison.Ordinal);
+    }
+
+    private static IEnumerable<IAssemblySymbol> EnumerateAssemblies(Compilation compilation)
+    {
+        var visited = new HashSet<IAssemblySymbol>(SymbolEqualityComparer.Default);
+        foreach (var referencedAssembly in compilation.SourceModule.ReferencedAssemblySymbols)
+        {
+            if (referencedAssembly is not null && visited.Add(referencedAssembly))
+            {
+                yield return referencedAssembly;
+            }
+        }
+
+        if (visited.Add(compilation.Assembly))
+        {
+            yield return compilation.Assembly;
+        }
+    }
+
+    private static ImmutableDictionary<string, string> ParseGlobalXmlnsPrefixesProperty(string? rawValue)
+    {
+        if (rawValue is null)
+        {
+            return ImmutableDictionary<string, string>.Empty;
+        }
+
+        var trimmedRawValue = rawValue.Trim();
+        if (trimmedRawValue.Length == 0)
+        {
+            return ImmutableDictionary<string, string>.Empty;
+        }
+
+        var map = ImmutableDictionary.CreateBuilder<string, string>(StringComparer.Ordinal);
+        var span = trimmedRawValue.AsSpan();
+        var index = 0;
+
+        while (index < span.Length)
+        {
+            while (index < span.Length && IsGlobalPrefixDelimiter(span[index]))
+            {
+                index++;
+            }
+
+            if (index >= span.Length)
+            {
+                break;
+            }
+
+            var entryStart = index;
+            while (index < span.Length && !IsGlobalPrefixDelimiter(span[index]))
+            {
+                index++;
+            }
+
+            var entry = span.Slice(entryStart, index - entryStart).Trim();
+            if (entry.Length == 0)
+            {
+                continue;
+            }
+
+            var separatorIndex = entry.IndexOf('=');
+            if (separatorIndex < 0 || separatorIndex >= entry.Length - 1)
+            {
+                continue;
+            }
+
+            var prefix = entry.Slice(0, separatorIndex).Trim();
+            var xmlNamespace = entry.Slice(separatorIndex + 1).Trim();
+            if (xmlNamespace.Length == 0)
+            {
+                continue;
+            }
+
+            map[prefix.ToString()] = xmlNamespace.ToString();
+        }
+
+        return map.ToImmutable();
+    }
+
+    private static bool IsGlobalPrefixDelimiter(char character)
+    {
+        return character == ';' || character == ',' || character == '\r' || character == '\n';
+    }
 
     // -------------------------------------------------------------------------
     // Private adapter classes — mirrors AvaloniaFrameworkProfile's nested classes

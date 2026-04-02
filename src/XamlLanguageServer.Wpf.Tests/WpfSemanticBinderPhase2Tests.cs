@@ -6,6 +6,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using XamlToCSharpGenerator.Core.Models;
 using XamlToCSharpGenerator.Core.Parsing;
 using XamlToCSharpGenerator.WPF.Binding;
+using XamlToCSharpGenerator.WPF.Framework;
 
 namespace XamlLanguageServer.Wpf.Tests;
 
@@ -174,10 +175,57 @@ public sealed class WpfSemanticBinderPhase2Tests
         Assert.Equal("string.Concat(\"Hello\", \" WXSG\")", titleAssignment.ValueExpression);
     }
 
+    [Fact]
+    public void Bind_Resolves_SimplerXaml_Without_Explicit_Xmlns_Declarations()
+    {
+        var compilation = CreateWpfCompilation();
+        var options = CreateOptions(
+            compilation.AssemblyName,
+            implicitStandardXmlnsPrefixesEnabled: true);
+        var parserSettings = WpfFrameworkProfile.Instance.BuildParserSettings(compilation, options);
+        var parser = new SimpleXamlDocumentParser(
+            parserSettings.GlobalXmlnsPrefixes,
+            parserSettings.AllowImplicitDefaultXmlns,
+            parserSettings.ImplicitDefaultXmlns);
+
+        var xaml =
+            "<Window x:Class=\"TestWpf.Controls.MainWindow\" Title=\"Hello\">\n" +
+            "  <Grid>\n" +
+            "    <Button />\n" +
+            "  </Grid>\n" +
+            "</Window>";
+
+        var (document, parseDiagnostics) = parser.Parse(new XamlFileInput(
+            FilePath: "/tmp/MainWindow.xaml",
+            TargetPath: "MainWindow.xaml",
+            SourceItemGroup: "Page",
+            Text: xaml));
+
+        Assert.NotNull(document);
+        Assert.Empty(parseDiagnostics.Where(static d => d.IsError));
+
+        var binder = new WpfSemanticBinder();
+        var (viewModel, diagnostics) = binder.Bind(
+            document!,
+            compilation,
+            options,
+            XamlTransformConfiguration.Empty);
+
+        Assert.NotNull(viewModel);
+        Assert.Empty(diagnostics.Where(static d => d.IsError));
+
+        Assert.Equal("TestWpf.Controls.Window", viewModel!.RootObject.TypeName);
+        var grid = Assert.Single(viewModel.RootObject.Children);
+        Assert.Equal("TestWpf.Controls.Grid", grid.TypeName);
+        var button = Assert.Single(grid.Children);
+        Assert.Equal("TestWpf.Controls.Button", button.TypeName);
+    }
+
     private static GeneratorOptions CreateOptions(
         string? assemblyName,
         bool csharpExpressionsEnabled = false,
-        bool implicitCSharpExpressionsEnabled = false)
+        bool implicitCSharpExpressionsEnabled = false,
+        bool implicitStandardXmlnsPrefixesEnabled = false)
     {
         return new GeneratorOptions(
             IsEnabled: true,
@@ -201,7 +249,7 @@ public sealed class WpfSemanticBinderPhase2Tests
             MarkupParserLegacyInvalidNamedArgumentFallbackEnabled: false,
             TypeResolutionCompatibilityFallbackEnabled: false,
             AllowImplicitXmlnsDeclaration: false,
-            ImplicitStandardXmlnsPrefixesEnabled: false,
+            ImplicitStandardXmlnsPrefixesEnabled: implicitStandardXmlnsPrefixesEnabled,
             ImplicitDefaultXmlns: string.Empty,
             InferClassFromPath: false,
             ImplicitProjectNamespacesEnabled: false,

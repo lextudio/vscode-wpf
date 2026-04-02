@@ -137,6 +137,27 @@ Progress (2026-04-02):
   in WPF/generator projects; sample analyzer wiring updated accordingly.
 - ⏳ Pending: compiled-binding type-checking pipeline for WPF.
 
+### Phase 6 — Simpler XAML (MAUI-style global xmlns)
+
+Goals:
+- Make WPF XAML less verbose by allowing files to omit repeated `xmlns` headers.
+- Support global namespace prefixes (including assembly-level `XmlnsPrefixAttribute`).
+- Keep explicit-xmlns files fully compatible.
+
+Progress (2026-04-02):
+- ✅ Implemented: `WpfFrameworkProfile.BuildParserSettings` now enables implicit WPF
+  namespaces and standard prefixes (`x`, `d`, `mc`) for WXSG parsing.
+- ✅ Implemented: global prefix map now merges assembly-level
+  `System.Windows.Markup.XmlnsPrefixAttribute` entries plus `GlobalXmlnsPrefixes`.
+- ✅ Implemented: coverage test added for parser settings/global-prefix behavior
+  (`WpfFrameworkProfileSimplerXamlTests`).
+- ✅ Implemented: parser now applies implicit default xmlns to unqualified elements/property-elements
+  (no explicit `xmlns` required for `Window`, `Grid`, etc. in simpler-XAML files).
+- ✅ Implemented: WPF binder now includes a safe fallback map for the standard WPF presentation URI
+  when `XmlnsDefinitionAttribute` metadata is missing from reference assemblies.
+- ✅ Verified: `sample/net6.0-csharp-expressions` builds with simpler XAML + `{cs: ...}` using
+  local NuGet package `XamlToCSharpGenerator.Generator.WPF` (`1.0.0-local.1`).
+
 ## MSBuild Integration
 
 Add this to a WPF project to opt in (Phase 1):
@@ -167,8 +188,10 @@ alongside `XamlToCSharpGenerator.Build`) will:
 | `WpfXamlSourceGenerator` in Generator project | ✅ Implemented |
 | Language server uses `XamlToCSharpGenerator.WPF` | ✅ Refactored |
 | `sample/net6.0-csharp-expressions` demo builds with WXSG Phase 1 | ✅ Working |
+| Sample switched to local NuGet package flow + simpler XAML + inline `{cs: ...}` demo | ✅ Updated |
 | MSBuild `XamlToCSharpGenerator.Build.WPF` targets (NuGet package) | 🚧 TODO |
 | Full semantic binding (Phase 2) | ✅ Implemented |
 | Pure C# emission (Phase 3) | ✅ Implemented |
 | Hot reload (Phase 4) | 🚧 In progress (generated hook + runtime invocation implemented) |
 | C# expressions (Phase 5) | 🚧 In progress (inline expression markup implemented) |
+| Simpler XAML (Phase 6) | ✅ Implemented (parser+binder support; sample verified) |

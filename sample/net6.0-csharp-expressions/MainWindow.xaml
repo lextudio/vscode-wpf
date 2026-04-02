@@ -1,38 +1,13 @@
 <!--
-  WXSG (WPF XAML Source Generator) — C# Expressions Demo
-  ========================================================
-
-  This project uses WpfXsgEnabled=true in sample.csproj.
-  The source generator (XamlToCSharpGenerator.Generator.WPF) produces:
-
-    1. Typed field declarations for every x:Name element below
-       (e.g. "internal System.Windows.Controls.TextBox FirstNameBox;")
-    2. InitializeComponent() that calls Application.LoadComponent + FindName
-       for each named element (Phase 1 / BAML-hybrid behaviour)
-
-  WPF's MSBuild-generated .g.cs is suppressed; the WXSG output wins instead.
-  Inspect obj/<tfm>/<AssemblyName>.<file>.wpf.g.cs to see the generated code.
-
-  WXSG Phase 5 goal (not yet implemented):
-    Inline C# expressions replace boilerplate converters and multi-bindings, e.g.
-
-      Text="{cs: vm.FirstName + " " + vm.LastName}"
-      Visibility="{cs: vm.Items.Count > 0 ? Visibility.Visible : Visibility.Collapsed}"
-      Background="{cs: vm.IsValid ? Brushes.LightGreen : Brushes.LightCoral}"
-
-    WXSG compiles those expressions into the generated InitializeComponent —
-    zero reflection, zero IValueConverter, full IDE rename/refactoring support.
+  WXSG sample:
+  - Simpler XAML: no explicit xmlns declarations at file head.
+  - C# expressions: `{cs: ...}` values are emitted as direct C# in WXSG output.
 -->
-<Window x:Class="sample.MainWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:sample"
-        mc:Ignorable="d"
-        Title="WXSG — C# Expressions Demo"
-        Width="520"
-        Height="420">
+<Window xmlns:local="clr-namespace:sample"
+        x:Class="sample.MainWindow"
+        Title="{cs: string.Concat(&quot;WXSG — &quot;, &quot;C# Expressions + Simpler XAML&quot;)}"
+        Width="{cs: 520}"
+        Height="{cs: 420}">
 
   <Window.Resources>
     <local:GreetingViewModel x:Key="Vm" />
@@ -82,7 +57,7 @@
                Grid.Row="2"
                Margin="0,0,0,12"
                Foreground="Gray"
-               Text="{Binding FullName}" />
+               Text="{cs: string.Concat(&quot;Computed label: &quot;, &quot;full name below&quot;)}" />
 
     <!-- Items list -->
     <ListBox x:Name="ItemsList"
@@ -105,7 +80,7 @@
       <Button x:Name="AddButton"
               Grid.Column="1"
               Padding="12,4"
-              Content="Add"
+              Content="{cs: string.Concat(&quot;Add&quot;, &quot; Item&quot;)}"
               Click="AddButton_Click" />
     </Grid>
   </Grid>
