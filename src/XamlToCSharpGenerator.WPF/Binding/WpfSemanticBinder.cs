@@ -187,6 +187,24 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
                 return;
             }
 
+            var ownerQualifiedInstanceProperty = FindProperty(objectType, attachedPropertyName);
+            if (ownerQualifiedInstanceProperty is not null &&
+                IsSameOrDerivedFrom(objectType, ownerType))
+            {
+                assignments.Add(new ResolvedPropertyAssignment(
+                    PropertyName: ownerQualifiedInstanceProperty.Name,
+                    ValueExpression: AsStringLiteral(assignment.Value),
+                    ClrPropertyOwnerTypeName: ownerQualifiedInstanceProperty.ContainingType
+                        .ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                    ClrPropertyTypeName: ownerQualifiedInstanceProperty.Type
+                        .ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                    Line: assignment.Line,
+                    Column: assignment.Column,
+                    Condition: assignment.Condition,
+                    ValueKind: ResolvedValueKind.Literal));
+                return;
+            }
+
             var routedEventField = FindRoutedEventField(ownerType, attachedPropertyName);
             if (routedEventField is not null)
             {
@@ -225,7 +243,11 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
                 Line: assignment.Line,
                 Column: assignment.Column,
                 Condition: assignment.Condition,
-                ValueKind: ResolvedValueKind.Literal));
+                ValueKind: ResolvedValueKind.Literal,
+                FrameworkPayload: new ResolvedFrameworkPropertyPayload(
+                    FrameworkId: "WPF",
+                    PropertyOwnerTypeName: ToDisplayName(ownerType),
+                    PropertyFieldName: null)));
 
             return;
         }
@@ -284,6 +306,8 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
         string propertyName = propertyElement.PropertyName;
         string? ownerTypeName = null;
         string? propertyTypeName = null;
+        var isCollectionAdd = false;
+        ResolvedFrameworkPropertyPayload? frameworkPayload = null;
 
         if (XamlPropertyTokenSemantics.TrySplitOwnerQualifiedProperty(
                 propertyElement.PropertyName,
@@ -298,7 +322,10 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
             }
             else
             {
-                var ownerProperty = FindProperty(ownerType, attachedPropertyName);
+                var ownerProperty =
+                    (objectType is not null && IsSameOrDerivedFrom(objectType, ownerType))
+                        ? FindProperty(objectType, attachedPropertyName)
+                        : FindProperty(ownerType, attachedPropertyName);
                 if (ownerProperty is not null)
                 {
                     ownerTypeName = ownerProperty.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
@@ -316,6 +343,13 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
                             ownerType,
                             propertyElement.Line,
                             propertyElement.Column);
+                    }
+                    else
+                    {
+                        frameworkPayload = new ResolvedFrameworkPropertyPayload(
+                            FrameworkId: "WPF",
+                            PropertyOwnerTypeName: ownerTypeName,
+                            PropertyFieldName: null);
                     }
                 }
             }
@@ -336,6 +370,7 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
                 propertyName = property.Name;
                 ownerTypeName = property.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                 propertyTypeName = property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                isCollectionAdd = IsCollectionLikeType(property.Type) || IsDictionaryLikeType(property.Type);
             }
         }
 
@@ -343,12 +378,13 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
             PropertyName: propertyName,
             ClrPropertyOwnerTypeName: ownerTypeName,
             ClrPropertyTypeName: propertyTypeName,
-            IsCollectionAdd: false,
+            IsCollectionAdd: isCollectionAdd,
             IsDictionaryMerge: false,
             ObjectValues: objectValues.ToImmutable(),
             Line: propertyElement.Line,
             Column: propertyElement.Column,
-            Condition: propertyElement.Condition);
+            Condition: propertyElement.Condition,
+            FrameworkPayload: frameworkPayload);
     }
 
     private static ImmutableArray<ResolvedNamedElement> ResolveNamedElements(
@@ -554,6 +590,19 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
         }
 
         return null;
+    }
+
+    private static bool IsSameOrDerivedFrom(INamedTypeSymbol type, INamedTypeSymbol baseType)
+    {
+        for (INamedTypeSymbol? current = type; current is not null; current = current.BaseType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(current, baseType))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static IFieldSymbol? FindRoutedEventField(INamedTypeSymbol ownerType, string eventName)
