@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Text;
 #if !NETFRAMEWORK
 using System.Text.Json;
@@ -739,6 +740,11 @@ public static class WpfHotReloadAgent
         var xClass = TryExtractXClass(xamlText);
         var sanitizedXaml = StripCompileOnlyAttributes(xamlText);
 
+        if (TryApplyWxsgHotReload(filePath, xamlText, xClass, out var wxsgHotReloadResult))
+        {
+            return wxsgHotReloadResult;
+        }
+
         // Fast/safe path first: apply named element property updates directly from XML.
         // This avoids object graph reconstruction and prevents debugger-breaking first-chance
         // exceptions for simple edits (e.g. colors/text/margins).
@@ -767,6 +773,83 @@ public static class WpfHotReloadAgent
         }
 
         return ApplyParsedRoot(liveRoot, parsedRoot);
+    }
+
+    private static bool TryApplyWxsgHotReload(string filePath, string xamlText, string? xClass, out string result)
+    {
+        result = string.Empty;
+        var liveRoot = FindWxsgLiveRoot(filePath, xClass);
+        if (liveRoot is null)
+        {
+            return false;
+        }
+
+        var method = liveRoot.GetType().GetMethod(
+            "__WXSG_ApplyHotReload",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            types: new[] { typeof(string), typeof(string) },
+            modifiers: null);
+        if (method is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var invocationResult = method.Invoke(liveRoot, new object?[] { filePath, xamlText });
+            if (invocationResult is bool applied && !applied)
+            {
+                result = "error: wxsg generated hot reload hook returned false";
+                return true;
+            }
+
+            result = "ok: wxsg generated object graph updated";
+            return true;
+        }
+        catch (TargetInvocationException ex)
+        {
+            result = $"error: wxsg generated hot reload failed: {ex.InnerException?.Message ?? ex.Message}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            result = $"error: wxsg generated hot reload failed: {ex.Message}";
+            return true;
+        }
+    }
+
+    private static object? FindWxsgLiveRoot(string filePath, string? xClass)
+    {
+        if (Application.Current is null)
+        {
+            return null;
+        }
+
+        var candidates = EnumerateLiveCandidates().ToList();
+
+        if (!string.IsNullOrWhiteSpace(xClass))
+        {
+            var exactMatch = candidates.FirstOrDefault(candidate =>
+                string.Equals(candidate.GetType().FullName, xClass, StringComparison.Ordinal));
+            if (exactMatch is not null)
+            {
+                return exactMatch;
+            }
+        }
+
+        var fileStem = Path.GetFileNameWithoutExtension(filePath);
+        if (!string.IsNullOrWhiteSpace(fileStem))
+        {
+            var fileNameMatch = candidates.FirstOrDefault(candidate =>
+                string.Equals(candidate.GetType().Name, fileStem, StringComparison.OrdinalIgnoreCase));
+            if (fileNameMatch is not null)
+            {
+                return fileNameMatch;
+            }
+        }
+
+        return Application.Current.MainWindow;
     }
 
     private static string? QueryValue(string? query)

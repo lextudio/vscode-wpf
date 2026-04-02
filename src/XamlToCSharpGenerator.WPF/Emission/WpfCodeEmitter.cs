@@ -66,6 +66,7 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
             sb.AppendLine();
         }
 
+        sb.AppendLine(emitter.MemberIndent + "private int __WXSG_HOT_RELOAD__;");
         sb.AppendLine(emitter.MemberIndent + "private bool _contentLoaded;");
         sb.AppendLine();
 
@@ -98,6 +99,7 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
         sb.AppendLine(i + "{");
         sb.AppendLine(i + "    if (_contentLoaded) return;");
         sb.AppendLine(i + "    _contentLoaded = true;");
+        sb.AppendLine(i + "    __WXSG_HOT_RELOAD__++;");
         sb.AppendLine(i);
         sb.AppendLine(i + "    // Phase 3: pure C# object-graph construction (no BAML LoadComponent).");
         sb.AppendLine(i + "    __WXSG_BuildObjectGraph();");
@@ -108,6 +110,76 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
         sb.AppendLine(i + "{");
         sb.AppendLine(i + "    var __root = this;");
         emitter.EmitNodeInitialization(viewModel.RootObject, "__root", isRootNode: true);
+        sb.AppendLine(i + "}");
+        sb.AppendLine();
+
+        sb.AppendLine(i + "internal bool __WXSG_ApplyHotReload(string __filePath, string __xamlText)");
+        sb.AppendLine(i + "{");
+        sb.AppendLine(i + "    _ = __filePath;");
+        sb.AppendLine(i + "    _ = __xamlText;");
+        sb.AppendLine(i + "    __WXSG_ResetForHotReload();");
+        sb.AppendLine(i + "    __WXSG_HOT_RELOAD__++;");
+        sb.AppendLine(i + "    _contentLoaded = true;");
+        sb.AppendLine(i + "    __WXSG_BuildObjectGraph();");
+        sb.AppendLine(i + "    return true;");
+        sb.AppendLine(i + "}");
+        sb.AppendLine();
+
+        EmitHotReloadReset(emitter, viewModel);
+    }
+
+    private static void EmitHotReloadReset(GraphEmitter emitter, ResolvedViewModel viewModel)
+    {
+        var sb = emitter.Builder;
+        var i = emitter.MemberIndent;
+
+        sb.AppendLine(i + "private void __WXSG_ResetForHotReload()");
+        sb.AppendLine(i + "{");
+        sb.AppendLine(i + "    if (__WXSG_HOT_RELOAD__ <= 0)");
+        sb.AppendLine(i + "    {");
+        sb.AppendLine(i + "        return;");
+        sb.AppendLine(i + "    }");
+        sb.AppendLine();
+        sb.AppendLine(i + "    _contentLoaded = false;");
+
+        if (viewModel.NamedElements.Length > 0)
+        {
+            sb.AppendLine();
+            foreach (var namedElement in viewModel.NamedElements)
+            {
+                sb.AppendLine(i + "    this." + namedElement.Name + " = null;");
+            }
+        }
+
+        emitter.EmitHotReloadCollectionCleanup(viewModel.RootObject);
+
+        sb.AppendLine(i + "}");
+        sb.AppendLine();
+
+        sb.AppendLine(i + "private static void __WXSG_ClearCollectionLike(object __value)");
+        sb.AppendLine(i + "{");
+        sb.AppendLine(i + "    if (__value is null)");
+        sb.AppendLine(i + "    {");
+        sb.AppendLine(i + "        return;");
+        sb.AppendLine(i + "    }");
+        sb.AppendLine();
+        sb.AppendLine(i + "    if (__value is global::System.Collections.IDictionary __dictionary)");
+        sb.AppendLine(i + "    {");
+        sb.AppendLine(i + "        __dictionary.Clear();");
+        sb.AppendLine(i + "        return;");
+        sb.AppendLine(i + "    }");
+        sb.AppendLine();
+        sb.AppendLine(i + "    if (__value is global::System.Collections.IList __list)");
+        sb.AppendLine(i + "    {");
+        sb.AppendLine(i + "        __list.Clear();");
+        sb.AppendLine(i + "        return;");
+        sb.AppendLine(i + "    }");
+        sb.AppendLine();
+        sb.AppendLine(i + "    var __clearMethod = __value.GetType().GetMethod(\"Clear\", global::System.Type.EmptyTypes);");
+        sb.AppendLine(i + "    if (__clearMethod is not null)");
+        sb.AppendLine(i + "    {");
+        sb.AppendLine(i + "        __clearMethod.Invoke(__value, null);");
+        sb.AppendLine(i + "    }");
         sb.AppendLine(i + "}");
     }
 
@@ -306,6 +378,62 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
                 Builder.AppendLine(
                     MemberIndent + "    " +
                     instanceVariable + "." + assignment.PropertyName + " = " + convertedValue + ";");
+            }
+        }
+
+        public void EmitHotReloadCollectionCleanup(ResolvedObjectNode rootNode)
+        {
+            var emittedMemberAccesses = new HashSet<string>(StringComparer.Ordinal);
+
+            if (!string.IsNullOrWhiteSpace(rootNode.ContentPropertyName))
+            {
+                var contentPropertyName = rootNode.ContentPropertyName;
+                switch (rootNode.ChildAttachmentMode)
+                {
+                    case ResolvedChildAttachmentMode.Content:
+                        Builder.AppendLine(MemberIndent + "    this." + contentPropertyName + " = null;");
+                        emittedMemberAccesses.Add("this." + contentPropertyName);
+                        break;
+                    case ResolvedChildAttachmentMode.ChildrenCollection:
+                    case ResolvedChildAttachmentMode.ItemsCollection:
+                    case ResolvedChildAttachmentMode.DirectAdd:
+                    case ResolvedChildAttachmentMode.DictionaryAdd:
+                        Builder.AppendLine(MemberIndent + "    __WXSG_ClearCollectionLike(this." + contentPropertyName + ");");
+                        emittedMemberAccesses.Add("this." + contentPropertyName);
+                        break;
+                }
+            }
+
+            foreach (var propertyElement in rootNode.PropertyElementAssignments)
+            {
+                if (propertyElement.ObjectValues.IsDefaultOrEmpty)
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(propertyElement.GetFrameworkPropertyOwnerTypeName(WpfFrameworkId)))
+                {
+                    continue;
+                }
+
+                var forceResourcesDictionaryAdd =
+                    propertyElement.PropertyName.Equals("Resources", StringComparison.Ordinal) &&
+                    propertyElement.ObjectValues.Length > 0;
+
+                if (!(propertyElement.IsCollectionAdd ||
+                      IsCollectionLikeTypeName(propertyElement.ClrPropertyTypeName) ||
+                      forceResourcesDictionaryAdd))
+                {
+                    continue;
+                }
+
+                var memberAccess = "this." + propertyElement.PropertyName;
+                if (!emittedMemberAccesses.Add(memberAccess))
+                {
+                    continue;
+                }
+
+                Builder.AppendLine(MemberIndent + "    __WXSG_ClearCollectionLike(" + memberAccess + ");");
             }
         }
 

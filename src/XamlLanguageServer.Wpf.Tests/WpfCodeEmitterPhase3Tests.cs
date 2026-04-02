@@ -52,6 +52,9 @@ public sealed class WpfCodeEmitterPhase3Tests
         Assert.DoesNotContain("Application.LoadComponent", source, StringComparison.Ordinal);
         Assert.DoesNotContain("IComponentConnector", source, StringComparison.Ordinal);
         Assert.Contains("__WXSG_BuildObjectGraph", source, StringComparison.Ordinal);
+        Assert.Contains("__WXSG_HOT_RELOAD__", source, StringComparison.Ordinal);
+        Assert.Contains("__WXSG_ApplyHotReload", source, StringComparison.Ordinal);
+        Assert.Contains("__WXSG_ResetForHotReload", source, StringComparison.Ordinal);
         Assert.Contains("new global::TestWpf.Controls.Grid()", source, StringComparison.Ordinal);
         Assert.Contains("new global::TestWpf.Controls.Button()", source, StringComparison.Ordinal);
         Assert.Contains("global::TestWpf.Controls.Grid.SetRow", source, StringComparison.Ordinal);

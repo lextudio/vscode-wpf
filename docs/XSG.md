@@ -115,6 +115,13 @@ Goals:
 - Source-generated classes carry the `__WXSG_HOT_RELOAD__` state field pattern used by AXSG.
 - IDE XAML-edit triggers incremental recompilation rather than full restart.
 
+Progress (2026-04-02):
+- ✅ Implemented: WXSG emitter now generates `__WXSG_HOT_RELOAD__`, `__WXSG_ApplyHotReload(...)`,
+  and reset/collection cleanup helpers for repeated object-graph application.
+- ✅ Implemented: runtime hot-reload agent now probes/invokes `__WXSG_ApplyHotReload(...)`
+  before falling back to XML/tree patching.
+- 🚧 Next: wire incremental compile trigger for WXSG XAML edits (currently runtime apply path is integrated).
+
 ### Phase 5 — C# expressions
 
 Goals:
@@ -153,7 +160,7 @@ alongside `XamlToCSharpGenerator.Build`) will:
 | Language server uses `XamlToCSharpGenerator.WPF` | ✅ Refactored |
 | `sample/net6.0-csharp-expressions` demo builds with WXSG Phase 1 | ✅ Working |
 | MSBuild `XamlToCSharpGenerator.Build.WPF` targets (NuGet package) | 🚧 TODO |
-| Full semantic binding (Phase 2) | 🚧 TODO |
-| Pure C# emission (Phase 3) | 🚧 TODO |
-| Hot reload (Phase 4) | 🚧 TODO |
+| Full semantic binding (Phase 2) | ✅ Implemented |
+| Pure C# emission (Phase 3) | ✅ Implemented |
+| Hot reload (Phase 4) | 🚧 In progress (generated hook + runtime invocation implemented) |
 | C# expressions (Phase 5) | 🚧 TODO |
