@@ -22,6 +22,10 @@ Write-Host 'Syncing package.json version from latest git tag (if present)...'
 Write-Host 'Building extension (esbuild)...'
 npm run build
 
+Write-Host 'Building packaged XamlDesigner variants (modern + net481)...'
+powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'scripts\build-designer.ps1') -Configuration Release
+if ($LASTEXITCODE -ne 0) { throw 'Failed to build XamlDesigner variants' }
+
 Write-Host 'Building WpfHotReload.Runtime helper (netcoreapp3.0 + net462)...'
 $helperProj = Join-Path $here 'src\WpfHotReload.Runtime\WpfHotReload.Runtime.csproj'
 foreach ($tfm in @('netcoreapp3.0', 'net462')) {

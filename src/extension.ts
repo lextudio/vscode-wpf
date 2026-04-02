@@ -133,7 +133,7 @@ export function activate(context: vscode.ExtensionContext): void {
       try {
 
         // 2. Check designer binary exists before potentially long build.
-        const exeExists = getDesignerExecutable(context) !== null;
+        const exeExists = getDesignerExecutable(context, projectPath) !== null;
 
         // 2b. Check TFM compatibility between the project and the built designer.
         const compat = checkDesignerCompatibility(projectPath, context);

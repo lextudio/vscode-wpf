@@ -12,6 +12,8 @@ export interface BuildResult {
 
 /** File written next to the designer binary recording which TFM it was built for. */
 const DESIGNER_TFM_FILE = 'designer.tfm';
+const MODERN_DESIGNER_DIR = 'XamlDesigner';
+const LEGACY_DESIGNER_DIR = 'XamlDesignerLegacy';
 
 let outputChannel: vscode.OutputChannel | undefined;
 
@@ -98,6 +100,26 @@ function isFrameworkTfm(tfm: string): boolean {
 }
 
 /**
+ * Returns true when .NET Framework 4.8.1 or later is installed on this machine.
+ * Reads the registry release DWORD; the 4.8.1 minimum is 533320.
+ * Returns false on non-Windows platforms or if the registry key is absent.
+ */
+function isDotNetFramework481Installed(): boolean {
+  if (process.platform !== 'win32') { return false; }
+  try {
+    const output = cp.execSync(
+      'reg query "HKLM\\SOFTWARE\\Microsoft\\NET Framework Setup\\NDP\\v4\\Full" /v Release',
+      { encoding: 'utf8', stdio: 'pipe', timeout: 3000 }
+    );
+    const m = /Release\s+REG_DWORD\s+0x([0-9a-f]+)/i.exec(output);
+    if (m) {
+      return parseInt(m[1], 16) >= 533320; // 4.8.1 minimum
+    }
+  } catch { /* registry key absent or command failed */ }
+  return false;
+}
+
+/**
  * Query `dotnet --list-sdks` and return the highest net-X.0-windows TFM
  * available on this machine, e.g. "net10.0-windows".
  * Returns null if dotnet is not found or no SDK >= 5 is installed.
@@ -121,9 +143,9 @@ async function detectHighestDotnetSdkTfm(dotnetCmd: string): Promise<string | nu
   });
 }
 
-/** Read the TFM that the bundled designer was last built for. */
-function getBuiltDesignerTfm(context: vscode.ExtensionContext): string | null {
-  const tfmFile = path.join(context.extensionPath, 'tools', 'XamlDesigner', DESIGNER_TFM_FILE);
+/** Read the TFM that a bundled designer variant was last built for. */
+function getBuiltDesignerTfm(context: vscode.ExtensionContext, toolsSubdir = MODERN_DESIGNER_DIR): string | null {
+  const tfmFile = path.join(context.extensionPath, 'tools', toolsSubdir, DESIGNER_TFM_FILE);
   try {
     return fs.readFileSync(tfmFile, 'utf8').trim() || null;
   } catch {
@@ -162,27 +184,52 @@ export function checkDesignerCompatibility(
   context: vscode.ExtensionContext
 ): CompatibilityResult {
   const { targetFramework: projectTfm } = parseProject(projectPath);
+  const modernDesignerExe = getBundledDesignerExecutable(context, MODERN_DESIGNER_DIR);
+  const modernDesignerTfm = getBuiltDesignerTfm(context, MODERN_DESIGNER_DIR);
+  const legacyDesignerExe = getLegacyDesignerExecutable(context);
+  const legacyDesignerTfm = getBuiltDesignerTfm(context, LEGACY_DESIGNER_DIR);
 
-  // .NET Framework projects — different runtime, cannot load into .NET Core designer.
   if (isFrameworkTfm(projectTfm)) {
+    if (legacyDesignerExe) {
+      if (!isDotNetFramework481Installed()) {
+        return {
+          compatible: false,
+          canRebuild: false,
+          message:
+            `This project targets .NET Framework (${projectTfm}). ` +
+            `The staged designer targets ${legacyDesignerTfm ?? 'net481'}, but .NET Framework 4.8.1 ` +
+            `is not installed on this machine. Install it to use the designer with full type support.`,
+        };
+      }
+      return { compatible: true, message: '', canRebuild: false };
+    }
+
     return {
       compatible: false,
-      canRebuild: false,
+      canRebuild: true,
       message:
         `This project targets .NET Framework (${projectTfm}). ` +
-        `The designer runs on .NET Core and cannot load .NET Framework assemblies. ` +
-        `The XAML will open without custom type support.`,
+        `The packaged net481 designer is missing. Build the Designer Tools to stage both the modern and net481 variants, ` +
+        `or launch anyway to open the XAML without custom type support.`,
     };
   }
 
-  const designerTfm = getBuiltDesignerTfm(context);
-  if (!designerTfm) {
+  if (!modernDesignerExe) {
+    return {
+      compatible: false,
+      canRebuild: true,
+      message:
+        'The packaged modern .NET designer is missing. Build the Designer Tools to stage both designer variants before launching.',
+    };
+  }
+
+  if (!modernDesignerTfm) {
     // No TFM file — old build or user-supplied exe; allow with a caveat.
     return { compatible: true, message: '', canRebuild: false };
   }
 
   const projectMajor = parseDotnetMajor(projectTfm);
-  const designerMajor = parseDotnetMajor(designerTfm);
+  const designerMajor = parseDotnetMajor(modernDesignerTfm);
 
   if (projectMajor === null || designerMajor === null) {
     return { compatible: true, message: '', canRebuild: false };
@@ -193,7 +240,7 @@ export function checkDesignerCompatibility(
       compatible: false,
       canRebuild: true,
       message:
-        `Project targets ${projectTfm} but the designer was built for ${designerTfm}. ` +
+        `Project targets ${projectTfm} but the designer was built for ${modernDesignerTfm}. ` +
         `The designer process cannot load assemblies from a newer runtime.`,
     };
   }
@@ -273,11 +320,23 @@ export async function buildProject(
 // Designer executable resolution
 // ---------------------------------------------------------------------------
 
-export function getDesignerExecutable(context: vscode.ExtensionContext): string | null {
+export function getDesignerExecutable(context: vscode.ExtensionContext, projectPath?: string): string | null {
   const override = vscode.workspace.getConfiguration('wpf').get<string>('designerExecutable', '');
   if (override && fs.existsSync(override)) { return override; }
 
-  const toolsDir = path.join(context.extensionPath, 'tools', 'XamlDesigner');
+  if (projectPath) {
+    const { targetFramework: tfm } = parseProject(projectPath);
+    if (isFrameworkTfm(tfm) && isDotNetFramework481Installed()) {
+      const legacyExe = getLegacyDesignerExecutable(context);
+      if (legacyExe) { return legacyExe; }
+    }
+  }
+
+  return getBundledDesignerExecutable(context, MODERN_DESIGNER_DIR);
+}
+
+function getBundledDesignerExecutable(context: vscode.ExtensionContext, toolsSubdir: string): string | null {
+  const toolsDir = path.join(context.extensionPath, 'tools', toolsSubdir);
 
   for (const name of ['XamlDesigner.exe', 'Demo.XamlDesigner.exe']) {
     const p = path.join(toolsDir, name);
@@ -297,6 +356,9 @@ export function getDesignerExecutable(context: vscode.ExtensionContext): string 
   return null;
 }
 
+function getLegacyDesignerExecutable(context: vscode.ExtensionContext): string | null {
+  return getBundledDesignerExecutable(context, LEGACY_DESIGNER_DIR);
+}
 // ---------------------------------------------------------------------------
 // Launch designer
 // ---------------------------------------------------------------------------
@@ -315,7 +377,7 @@ export function launchDesigner(
     return;
   }
 
-  const exe = getDesignerExecutable(context);
+  const exe = getDesignerExecutable(context, projectPath);
   if (!exe) {
     vscode.window
       .showErrorMessage('XamlDesigner.exe not found. Run "WPF: Build Designer Tools" to build it.', 'Build Designer Tools')
@@ -489,6 +551,7 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
 
   const cfg = vscode.workspace.getConfiguration('wpf');
   const dotnet = cfg.get<string>('dotnetPath', 'dotnet');
+  let modernBuildSucceeded = false;
 
   // Resolve target framework: explicit setting → auto-detect highest SDK → fallback.
   const settingTfm = cfg.get<string>('designerTargetFramework', '').trim();
@@ -528,7 +591,7 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
         void stopConflictingDesignerProcesses(dotnet, channel).then(() => {
           const restoreProc = cp.spawn(
             dotnet,
-            ['restore', submoduleCsproj, '--nologo', '-p:UseSharedCompilation=false'],
+            ['restore', submoduleCsproj, '--nologo', '-p:UseSharedCompilation=false', `-p:TargetFramework=${targetFramework}`],
             { shell: true }
           );
           restoreProc.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
@@ -551,7 +614,8 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
             const proc = cp.spawn(
               dotnet,
               ['build', submoduleCsproj, '--configuration', 'Release',
-                '--nologo', '--no-restore', '-maxcpucount:1', '-p:UseSharedCompilation=false'],
+                '--nologo', '--no-restore', '-maxcpucount:1', '-p:UseSharedCompilation=false',
+                `-p:TargetFramework=${targetFramework}`],
               { shell: true }
             );
 
@@ -585,7 +649,7 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
 
                 writeDesignerTfm(outDir, targetFramework);
                 channel.appendLine(`\nDesigner tools built successfully (${targetFramework}).`);
-                vscode.window.showInformationMessage(`WPF Designer Tools built (${targetFramework}).`);
+                modernBuildSucceeded = true;
               } else {
                 channel.appendLine(`\nBuild FAILED (exit code ${code}).`);
                 vscode.window.showErrorMessage('Failed to build WPF Designer Tools. See "WPF Designer" output channel.');
@@ -603,6 +667,110 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
         });
       });
     }
+  );
+
+  if (!modernBuildSucceeded) {
+    return;
+  }
+
+  const legacyBuildSucceeded = await buildLegacyDesignerTools(context, dotnet, submoduleCsproj, tempProps, channel);
+  if (!legacyBuildSucceeded) {
+    vscode.window.showErrorMessage(
+      'Failed to build required net481 designer artifacts. Install the .NET Framework 4.8.1 targeting pack and rebuild.'
+    );
+    return;
+  }
+
+  vscode.window.showInformationMessage(`WPF Designer Tools built (${targetFramework} + net481).`);
+}
+
+async function buildLegacyDesignerTools(
+  context: vscode.ExtensionContext,
+  dotnet: string,
+  submoduleCsproj: string,
+  tempProps: string,
+  channel: vscode.OutputChannel
+): Promise<boolean> {
+  const legacyTfm = 'net481';
+  const legacyOutDir = path.join(context.extensionPath, 'tools', LEGACY_DESIGNER_DIR);
+
+  channel.appendLine(`\n=== Building .NET Framework Designer (${legacyTfm}) ===`);
+
+  const propsContent =
+    `<!-- Auto-generated by vscode-wpf extension — do not commit -->\n` +
+    `<Project>\n  <PropertyGroup>\n` +
+    `    <TargetFramework>${legacyTfm}</TargetFramework>\n` +
+    `  </PropertyGroup>\n</Project>\n`;
+
+  try {
+    fs.writeFileSync(tempProps, propsContent, 'utf8');
+    channel.appendLine(`  Wrote temporary Directory.Build.props (${legacyTfm})`);
+  } catch (err) {
+    channel.appendLine(`ERROR: Could not write Directory.Build.props for ${legacyTfm}: ${err}`);
+    return false;
+  }
+
+  return await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `Building .NET Framework Designer (${legacyTfm})…`, cancellable: false },
+    () => new Promise<boolean>(resolve => {
+      const restore = cp.spawn(
+        dotnet,
+        ['restore', submoduleCsproj, '--nologo', '-p:UseSharedCompilation=false', `-p:TargetFramework=${legacyTfm}`],
+        { shell: true }
+      );
+      restore.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
+      restore.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
+      restore.on('error', err => {
+        try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
+        channel.appendLine(`ERROR: ${err.message}`);
+        resolve(false);
+      });
+      restore.on('close', (restoreCode: number | null) => {
+        if (restoreCode !== 0) {
+          try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
+          channel.appendLine(`\n${legacyTfm} restore failed — the .NET Framework 4.8.1 targeting pack may not be installed.`);
+          resolve(false);
+          return;
+        }
+
+        const build = cp.spawn(
+          dotnet,
+          ['build', submoduleCsproj, '--configuration', 'Release',
+            '--nologo', '--no-restore', '-maxcpucount:1', '-p:UseSharedCompilation=false',
+            `-p:TargetFramework=${legacyTfm}`],
+          { shell: true }
+        );
+        build.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
+        build.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
+        build.on('error', err => {
+          try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
+          channel.appendLine(`ERROR: ${err.message}`);
+          resolve(false);
+        });
+        build.on('close', (code: number | null) => {
+          try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
+          channel.appendLine('  Removed temporary Directory.Build.props');
+
+          if (code === 0) {
+            const builtDir = path.join(
+              context.extensionPath, 'external', 'WpfDesigner', 'XamlDesigner', 'bin', 'Release', legacyTfm
+            );
+            try {
+              syncBuiltDesignerOutput(builtDir, legacyOutDir);
+              writeDesignerTfm(legacyOutDir, legacyTfm);
+              channel.appendLine(`\n.NET Framework designer built successfully (${legacyTfm}).`);
+              resolve(true);
+            } catch (err) {
+              channel.appendLine(`ERROR: Failed to stage ${legacyTfm} artifacts: ${err}`);
+              resolve(false);
+            }
+          } else {
+            channel.appendLine(`\n${legacyTfm} build failed (exit ${code}) — the .NET Framework 4.8.1 targeting pack may not be installed.`);
+            resolve(false);
+          }
+        });
+      });
+    })
   );
 }
 
