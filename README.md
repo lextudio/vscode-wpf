@@ -13,6 +13,10 @@ development experience for WPF with open source components
 - Runtime startup-hook based XAML Hot Reload
 - VS Code toolbox drag/drop for XAML controls
 
+![Visual designer screenshot](https://www.lextudio.com/images/wpf-designer.png)
+
+> [Watch our Hot Reload demo video](https://www.lextudio.com/videos/wpf-hot-reload.mp4)
+>
 > Note that to inspect runtime state of your WPF apps, tools like [Snoop](https://github.com/snoopwpf/snoopwpf) can be used. We might explore how to integrate them in this extension in the future.
 
 ## Getting started
@@ -32,7 +36,7 @@ The language server and XAML Hot Reload for WPF are under development.
 XAML Hot Reload helper and visual designer currently target:
 
 - .NET Core / modern .NET WPF apps via `netcoreapp3.0` helper (supports .NET Core 3.1+ and newer)
-- .NET Framework WPF apps via `net462` helper (including `net46x` family)
+- .NET Framework WPF apps via `net462` helper (including .NET Framework 4.6.2 and newer)
 
 ## License
 
