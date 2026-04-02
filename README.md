@@ -29,7 +29,8 @@ The visual designer for WPF from SharpDevelop is stable.
 
 The language server and XAML Hot Reload for WPF are under development.
 
-Runtime hot reload helper currently targets:
+XAML Hot Reload helper and visual designer currently target:
+
 - .NET Core / modern .NET WPF apps via `netcoreapp3.0` helper (supports .NET Core 3.1+ and newer)
 - .NET Framework WPF apps via `net462` helper (including `net46x` family)
 
