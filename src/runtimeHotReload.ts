@@ -164,11 +164,18 @@ export async function startRuntimeHotReloadSession(
 
   if (helperAssemblyPath && isFramework) {
     try {
-      stageFrameworkRuntimeHelper(helperAssemblyPath, path.dirname(program));
+      const staged = stageFrameworkRuntimeHelper(helperAssemblyPath, path.dirname(program));
+      if (!staged.success) {
+        channel.appendLine(`[Runtime] Framework helper staging completed with warnings: ${staged.errors.join(' | ')}`);
+        vscode.window.showWarningMessage(
+          'WPF hot reload could not fully stage the .NET Framework helper, but will try to continue.'
+        );
+      }
     } catch (err) {
       channel.appendLine(`[Runtime] Failed to stage framework helper: ${String(err)}`);
-      vscode.window.showErrorMessage('Failed to stage the .NET Framework hot reload helper.');
-      return false;
+      vscode.window.showWarningMessage(
+        'WPF hot reload could not stage the .NET Framework helper, but will try to continue.'
+      );
     }
   }
 
@@ -505,8 +512,14 @@ function isRuntimeHelperUpToDate(projectPath: string, helperDllPath: string): bo
   return true;
 }
 
-function stageFrameworkRuntimeHelper(helperAssemblyPath: string, destinationDir: string): void {
+function stageFrameworkRuntimeHelper(
+  helperAssemblyPath: string,
+  destinationDir: string
+): { success: boolean; errors: string[] } {
   const helperDir = path.dirname(helperAssemblyPath);
+  const errors: string[] = [];
+
+  fs.mkdirSync(destinationDir, { recursive: true });
 
   for (const entry of fs.readdirSync(helperDir, { withFileTypes: true })) {
     if (!entry.isFile()) {
@@ -515,7 +528,40 @@ function stageFrameworkRuntimeHelper(helperAssemblyPath: string, destinationDir:
 
     const sourcePath = path.join(helperDir, entry.name);
     const destinationPath = path.join(destinationDir, entry.name);
-    fs.copyFileSync(sourcePath, destinationPath);
+
+    if (path.resolve(sourcePath) === path.resolve(destinationPath)) {
+      continue;
+    }
+
+    try {
+      copyFileWithRetry(sourcePath, destinationPath);
+    } catch (err) {
+      errors.push(`${entry.name}: ${String(err)}`);
+    }
+  }
+
+  return { success: errors.length === 0, errors };
+}
+
+function copyFileWithRetry(sourcePath: string, destinationPath: string): void {
+  const attempts = 3;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      fs.copyFileSync(sourcePath, destinationPath);
+      return;
+    } catch (err) {
+      if (attempt === attempts) {
+        throw err;
+      }
+
+      const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
+      if (!['EBUSY', 'EPERM', 'EACCES'].includes(code)) {
+        throw err;
+      }
+
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
   }
 }
 
