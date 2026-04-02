@@ -1,5 +1,11 @@
 # Change Log
 
+## [0.9.7] - 2026-04-02
+
+- Fixed XAML Hot Reload for .NET Framework.
+- Added visual designer for .NET Framework.
+- Fixed event handler creation.
+
 ## [0.9.6] - 2026-04-01
 
 - Fixed packaging issue.

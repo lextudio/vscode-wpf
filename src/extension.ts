@@ -23,10 +23,10 @@ import {
   restartDesignerSession,
   setEventHandlerCallback,
 } from './designerLauncher';
-import { insertEventHandlerStub } from './codeBehindWriter';
 import { disposeStatusBar, getStatusBarItem, updateStatusBar } from './statusBar';
 import {
   getDesignerProjectContext,
+  getLanguageServerClient,
   startLanguageServer,
   stopLanguageServer,
 } from './languageServer';
@@ -44,6 +44,19 @@ import { registerToolbox } from './toolbox';
 const selectedProjects = new Map<string, string>();
 const designerLaunchOperations = new Set<string>();
 const hotReloadTimers = new Map<string, NodeJS.Timeout>();
+let eventHandlerLogChannel: vscode.OutputChannel | undefined;
+
+function getEventHandlerLog(): vscode.OutputChannel {
+  if (!eventHandlerLogChannel) {
+    eventHandlerLogChannel = vscode.window.createOutputChannel('WPF Event Handler');
+  }
+
+  return eventHandlerLogChannel;
+}
+
+function logEventHandler(message: string): void {
+  getEventHandlerLog().appendLine(`[${new Date().toISOString()}] ${message}`);
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   console.log('VS Code WPF extension is now active.');
@@ -55,23 +68,43 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Handle event handler creation requests from the visual designer.
   setEventHandlerCallback(async msg => {
+    logEventHandler(
+      `Request received. xaml='${msg.xamlPath}', event='${msg.eventName}', handler='${msg.handlerName}'`
+    );
+
     const codeBehindPath = msg.xamlPath.replace(/\.xaml$/i, '.xaml.cs');
     if (!fs.existsSync(codeBehindPath)) {
+      logEventHandler(`Code-behind file not found: ${codeBehindPath}`);
       vscode.window.showErrorMessage(
         `Code-behind file not found: ${path.basename(codeBehindPath)}`
       );
       return;
     }
 
-    const position = await insertEventHandlerStub(
-      codeBehindPath, msg.handlerName, msg.eventArgType
+    await startLanguageServer(context);
+    logEventHandler('Language server start/ensure requested.');
+
+    const lsPosition =
+      await tryInsertEventHandlerViaLanguageServer(msg.xamlPath, msg.eventName, msg.handlerName);
+    const position = lsPosition ?? await tryInsertEventHandlerFallback(
+      codeBehindPath,
+      msg.handlerName,
+      msg.eventArgType
     );
+
+    if (!lsPosition) {
+      logEventHandler('Language-server insertion path did not return a position; fallback path attempted.');
+    }
+
     if (!position) {
+      logEventHandler('Insertion failed: language-server flow returned no position.');
       vscode.window.showErrorMessage(
-        `Could not insert event handler stub in ${path.basename(codeBehindPath)}.`
+        `Could not insert event handler in ${path.basename(codeBehindPath)}. ` +
+        'Ensure the WPF XAML language server is running and retry.'
       );
       return;
     }
+    logEventHandler(`Insertion succeeded at ${codeBehindPath}:${position.line + 1}:${position.character + 1}`);
 
     const uri = vscode.Uri.file(codeBehindPath);
     const doc = await vscode.workspace.openTextDocument(uri);
@@ -569,12 +602,381 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
+async function tryInsertEventHandlerViaLanguageServer(
+  xamlPath: string,
+  eventName: string,
+  handlerName: string
+): Promise<vscode.Position | null> {
+  const client = getLanguageServerClient();
+  if (!client) {
+    logEventHandler('Language server client is unavailable.');
+    return null;
+  }
+
+  const xamlUri = vscode.Uri.file(xamlPath);
+  const xamlDoc = await vscode.workspace.openTextDocument(xamlUri);
+  const attributeRange = findEventHandlerAttributeRange(xamlDoc, eventName, handlerName);
+  if (!attributeRange) {
+    logEventHandler(`Attribute range not found for ${eventName}='${handlerName}' in ${xamlPath}`);
+    return null;
+  }
+  logEventHandler(
+    `Resolved attribute range ${attributeRange.start.line + 1}:${attributeRange.start.character + 1}` +
+    `-${attributeRange.end.line + 1}:${attributeRange.end.character + 1}`
+  );
+
+  const actions = await vscode.commands.executeCommand<Array<vscode.CodeAction | vscode.Command>>(
+    'vscode.executeCodeActionProvider',
+    xamlUri,
+    attributeRange
+  );
+
+  if (!actions?.length) {
+    logEventHandler('No code actions returned by vscode.executeCodeActionProvider.');
+    return null;
+  }
+  logEventHandler(`Code actions returned: ${actions.length}`);
+
+  const chosen = chooseEventHandlerAction(actions, handlerName);
+  if (!chosen) {
+    const titles = actions
+      .filter((action): action is vscode.CodeAction => 'title' in action)
+      .map(action => action.title)
+      .join(' | ');
+    logEventHandler(`No matching event-handler code action. Titles: ${titles || '(none)'}`);
+    return null;
+  }
+  logEventHandler(`Chosen action: ${chosen.title}`);
+
+  if ('edit' in chosen && chosen.edit) {
+    logEventHandler('Applying workspace edit from chosen action.');
+    const editApplied = await vscode.workspace.applyEdit(chosen.edit);
+    if (!editApplied) {
+      logEventHandler('workspace.applyEdit returned false.');
+      return null;
+    }
+  }
+
+  if ('command' in chosen && chosen.command) {
+    logEventHandler(`Executing action command: ${chosen.command.command}`);
+    await vscode.commands.executeCommand(
+      chosen.command.command,
+      ...(chosen.command.arguments ?? [])
+    );
+  }
+
+  const codeBehindUri = vscode.Uri.file(xamlPath.replace(/\.xaml$/i, '.xaml.cs'));
+  const codeBehindDoc = await vscode.workspace.openTextDocument(codeBehindUri);
+  const methodMatch = new RegExp(`\\b${escapeRegExp(handlerName)}\\s*\\(`).exec(codeBehindDoc.getText());
+  if (!methodMatch) {
+    logEventHandler(`Handler method '${handlerName}' not found after action application.`);
+    return null;
+  }
+  logEventHandler(`Handler method '${handlerName}' located in ${codeBehindUri.fsPath}.`);
+
+  return codeBehindDoc.positionAt(methodMatch.index);
+}
+
+async function tryInsertEventHandlerFallback(
+  codeBehindPath: string,
+  handlerName: string,
+  eventArgTypeFullName: string
+): Promise<vscode.Position | null> {
+  try {
+    const uri = vscode.Uri.file(codeBehindPath);
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const content = doc.getText();
+
+    const existingMethod = new RegExp(`\\bvoid\\s+${escapeRegExp(handlerName)}\\s*\\(`).exec(content);
+    if (existingMethod) {
+      logEventHandler(`Fallback: handler '${handlerName}' already exists.`);
+      return doc.positionAt(existingMethod.index);
+    }
+
+    const closeBraceOffset = findClassClosingBraceOffset(content);
+    if (closeBraceOffset < 0) {
+      logEventHandler('Fallback: could not find class closing brace.');
+      return null;
+    }
+
+    const indent = detectIndent(content);
+    const memberIndent = indent + indent;
+    const bodyIndent = memberIndent + indent;
+    const argType = shortTypeName(eventArgTypeFullName);
+    const stub =
+      `\n${memberIndent}private void ${handlerName}(object sender, ${argType} e)\n` +
+      `${memberIndent}{\n` +
+      `${bodyIndent}\n` +
+      `${memberIndent}}\n`;
+
+    const insertionPosition = doc.positionAt(closeBraceOffset);
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(uri, insertionPosition, stub);
+    const applied = await vscode.workspace.applyEdit(edit);
+    if (!applied) {
+      logEventHandler('Fallback: workspace.applyEdit returned false.');
+      return null;
+    }
+
+    const updatedDoc = await vscode.workspace.openTextDocument(uri);
+    const insertedMethod = new RegExp(`\\b${escapeRegExp(handlerName)}\\s*\\(`).exec(updatedDoc.getText());
+    if (!insertedMethod) {
+      logEventHandler(`Fallback: inserted handler '${handlerName}' was not found after edit.`);
+      return null;
+    }
+
+    logEventHandler(`Fallback insertion succeeded for handler '${handlerName}'.`);
+    return updatedDoc.positionAt(insertedMethod.index);
+  } catch (err) {
+    logEventHandler(`Fallback insertion threw: ${String(err)}`);
+    return null;
+  }
+}
+
+function chooseEventHandlerAction(
+  actions: Array<vscode.CodeAction | vscode.Command>,
+  handlerName: string
+): vscode.CodeAction | null {
+  const normalizedHandler = handlerName.trim().toLowerCase();
+  const codeActions = actions.filter((action): action is vscode.CodeAction => 'kind' in action);
+
+  const preferred = codeActions.find(action => {
+    const title = action.title.trim().toLowerCase();
+    return title.includes('event handler') && title.includes(normalizedHandler);
+  });
+  if (preferred) {
+    return preferred;
+  }
+
+  // Fallback: older/newer title variants from the AXSG provider.
+  return codeActions.find(action => {
+    const title = action.title.trim().toLowerCase();
+    return title.startsWith('axsg: add') && title.includes(normalizedHandler);
+  }) ?? null;
+}
+
+function findEventHandlerAttributeRange(
+  document: vscode.TextDocument,
+  eventName: string,
+  handlerName: string
+): vscode.Range | null {
+  const text = document.getText();
+  const exactPattern = new RegExp(
+    `\\b${escapeRegExp(eventName)}\\s*=\\s*(['"])${escapeRegExp(handlerName)}\\1`,
+    'g'
+  );
+  const exactMatch = exactPattern.exec(text);
+  if (exactMatch && exactMatch.index >= 0) {
+    const start = document.positionAt(exactMatch.index);
+    const end = document.positionAt(exactMatch.index + exactMatch[0].length);
+    return new vscode.Range(start, end);
+  }
+
+  // Fallback when the designer callback arrives before the exact handler value
+  // is persisted in XAML: target the first matching event attribute by name.
+  const eventOnlyPattern = new RegExp(
+    `\\b${escapeRegExp(eventName)}\\s*=\\s*(['"])[^'"]*\\1`,
+    'g'
+  );
+  const eventOnlyMatch = eventOnlyPattern.exec(text);
+  if (eventOnlyMatch && eventOnlyMatch.index >= 0) {
+    const start = document.positionAt(eventOnlyMatch.index);
+    const end = document.positionAt(eventOnlyMatch.index + eventOnlyMatch[0].length);
+    return new vscode.Range(start, end);
+  }
+
+  // Last resort: ask for actions at document start so provider-side diagnostics
+  // can still surface a relevant event-handler fix.
+  return new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function shortTypeName(fullName: string): string {
+  return fullName.split('.').pop() ?? 'EventArgs';
+}
+
+function detectIndent(content: string): string {
+  const match = /^([ \t]+)\S/m.exec(content);
+  if (!match) {
+    return '    ';
+  }
+
+  return match[1][0] === '\t' ? '\t' : '    ';
+}
+
+function isIdentifierChar(ch: string): boolean {
+  return /[A-Za-z0-9_]/.test(ch);
+}
+
+function isKeywordAt(content: string, index: number, keyword: string): boolean {
+  if (!content.startsWith(keyword, index)) {
+    return false;
+  }
+
+  const before = index > 0 ? content[index - 1] : '';
+  const afterIndex = index + keyword.length;
+  const after = afterIndex < content.length ? content[afterIndex] : '';
+  return !isIdentifierChar(before) && !isIdentifierChar(after);
+}
+
+function findClassClosingBraceOffset(content: string): number {
+  let inLineComment = false;
+  let inBlockComment = false;
+  let inString = false;
+  let inVerbatimString = false;
+  let inChar = false;
+  let classBodyStart = -1;
+  let classDepth = 0;
+
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i];
+    const next = i + 1 < content.length ? content[i + 1] : '';
+
+    if (inLineComment) {
+      if (ch === '\n') {
+        inLineComment = false;
+      }
+      continue;
+    }
+
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (inVerbatimString) {
+        if (ch === '"' && next === '"') {
+          i++;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+          inVerbatimString = false;
+        }
+      } else {
+        if (ch === '\\') {
+          i++;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+        }
+      }
+      continue;
+    }
+
+    if (inChar) {
+      if (ch === '\\') {
+        i++;
+        continue;
+      }
+      if (ch === '\'') {
+        inChar = false;
+      }
+      continue;
+    }
+
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === '/' && next === '*') {
+      inBlockComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === '@' && next === '"') {
+      inString = true;
+      inVerbatimString = true;
+      i++;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      inVerbatimString = false;
+      continue;
+    }
+
+    if (ch === '\'') {
+      inChar = true;
+      continue;
+    }
+
+    if (classBodyStart < 0) {
+      if (isKeywordAt(content, i, 'class')) {
+        let j = i + 'class'.length;
+        while (j < content.length) {
+          const cj = content[j];
+          const nj = j + 1 < content.length ? content[j + 1] : '';
+
+          if (cj === '/' && nj === '/') {
+            while (j < content.length && content[j] !== '\n') {
+              j++;
+            }
+            continue;
+          }
+
+          if (cj === '/' && nj === '*') {
+            j += 2;
+            while (j + 1 < content.length && !(content[j] === '*' && content[j + 1] === '/')) {
+              j++;
+            }
+            j++;
+            continue;
+          }
+
+          if (cj === '{') {
+            classBodyStart = j;
+            classDepth = 1;
+            i = j;
+            break;
+          }
+
+          if (cj === ';') {
+            break;
+          }
+
+          j++;
+        }
+      }
+      continue;
+    }
+
+    if (ch === '{') {
+      classDepth++;
+      continue;
+    }
+
+    if (ch === '}') {
+      classDepth--;
+      if (classDepth === 0) {
+        return i;
+      }
+    }
+  }
+
+  return -1;
+}
+
 export async function deactivate(): Promise<void> {
   for (const timer of hotReloadTimers.values()) {
     clearTimeout(timer);
   }
   hotReloadTimers.clear();
   await stopLanguageServer();
+  eventHandlerLogChannel?.dispose();
+  eventHandlerLogChannel = undefined;
   disposeStatusBar();
 }
 
