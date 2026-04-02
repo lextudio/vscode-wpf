@@ -9,7 +9,7 @@ namespace WpfHotReload.Runtime;
 /// .NET Framework uses APPDOMAIN_MANAGER_ASM and APPDOMAIN_MANAGER_TYPE environment variables
 /// instead of DOTNET_STARTUP_HOOKS. This class is instantiated by the CLR on startup.
 /// </summary>
-internal class FrameworkStartupHook : AppDomainManager
+public class FrameworkStartupHook : AppDomainManager
 {
     public override void InitializeNewDomain(AppDomainSetup appDomainInfo)
     {

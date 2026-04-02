@@ -25,6 +25,7 @@ function getOutputChannel(): vscode.OutputChannel {
 interface DesignerSession {
   proc: cp.ChildProcess;
   pipeName: string;
+  callbackServer: net.Server;
   lastXamlPath?: string;
 }
 
@@ -34,8 +35,42 @@ interface DesignerPipeMessage {
   xamlText?: string;
 }
 
+export interface DesignerCallbackMessage {
+  command: string;
+  xamlPath: string;
+  handlerName: string;
+  eventName: string;
+  eventArgType: string;
+}
+
 // Track one designer session per project path.
 const activeDesigners = new Map<string, DesignerSession>();
+
+let eventHandlerCallback: ((msg: DesignerCallbackMessage) => void) | undefined;
+
+export function setEventHandlerCallback(cb: (msg: DesignerCallbackMessage) => void): void {
+  eventHandlerCallback = cb;
+}
+
+function createCallbackServer(pipeName: string): net.Server {
+  const server = net.createServer(socket => {
+    let data = '';
+    socket.on('data', chunk => { data += chunk.toString(); });
+    socket.on('end', () => {
+      try {
+        const msg = JSON.parse(data) as DesignerCallbackMessage;
+        if (msg.command === 'createEventHandler') {
+          eventHandlerCallback?.(msg);
+        }
+      } catch {
+        // Ignore malformed messages.
+      }
+    });
+    socket.on('error', () => { /* connection errors are non-fatal */ });
+  });
+  server.listen(`\\\\.\\pipe\\${pipeName}`);
+  return server;
+}
 
 // ---------------------------------------------------------------------------
 // TFM helpers
@@ -289,7 +324,9 @@ export function launchDesigner(
   }
 
   const pipeName = `XamlDesigner-${Date.now()}`;
-  const args = ['--pipe', pipeName, xamlPath, ...assemblies];
+  const callbackPipeName = `XamlDesigner-cb-${Date.now()}`;
+  const callbackServer = createCallbackServer(callbackPipeName);
+  const args = ['--pipe', pipeName, '--callback', callbackPipeName, xamlPath, ...assemblies];
   const channel = getOutputChannel();
   channel.appendLine(`\n=== Launching Designer ===`);
   channel.appendLine(`  Exe      : ${exe}`);
@@ -316,13 +353,14 @@ export function launchDesigner(
   });
 
   proc.on('close', (code: number | null) => {
+    callbackServer.close();
     activeDesigners.delete(projectPath);
     if (code !== 0 && code !== null) {
       channel.appendLine(`Designer exited with code ${code}.`);
     }
   });
 
-  activeDesigners.set(projectPath, { proc, pipeName, lastXamlPath: xamlPath });
+  activeDesigners.set(projectPath, { proc, pipeName, callbackServer, lastXamlPath: xamlPath });
 
   if (xamlText) {
     void sendDesignerMessageWithRetry(pipeName, createDesignerMessage(xamlPath, xamlText));
@@ -358,6 +396,7 @@ export function restartDesignerSession(projectPath: string): void {
     // Best effort: remove stale session even if the process is already gone.
   }
 
+  session.callbackServer.close();
   activeDesigners.delete(projectPath);
 }
 
@@ -486,60 +525,131 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
     { location: vscode.ProgressLocation.Notification, title: 'Building WPF Designer Tools…', cancellable: false },
     async () => {
       await new Promise<void>(resolve => {
-        const restoreProc = cp.spawn(dotnet, ['restore', submoduleCsproj, '--nologo'], { shell: true });
-        restoreProc.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
-        restoreProc.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
-
-        restoreProc.on('error', (err: Error) => {
-          channel.appendLine(`ERROR: ${err.message}`);
-          vscode.window.showErrorMessage(`Restore error: ${err.message}`);
-          resolve();
-        });
-
-        restoreProc.on('close', (restoreCode: number | null) => {
-          if (restoreCode !== 0) {
-            channel.appendLine(`\nRestore FAILED (exit code ${restoreCode}).`);
-            vscode.window.showErrorMessage('Failed to restore WPF Designer Tools. See "WPF Designer" output channel.');
-            resolve();
-            return;
-          }
-
-          const proc = cp.spawn(
+        void stopConflictingDesignerProcesses(dotnet, channel).then(() => {
+          const restoreProc = cp.spawn(
             dotnet,
-            ['build', submoduleCsproj, '--configuration', 'Release',
-              '--output', outDir, '--nologo', '--no-restore'],
+            ['restore', submoduleCsproj, '--nologo', '-p:UseSharedCompilation=false'],
             { shell: true }
           );
+          restoreProc.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
+          restoreProc.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
 
-          proc.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
-          proc.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
-
-          proc.on('close', (code: number | null) => {
-            // Always remove the temp props file before reporting.
-            try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
-            channel.appendLine('  Removed temporary Directory.Build.props');
-
-            if (code === 0) {
-              writeDesignerTfm(outDir, targetFramework);
-              channel.appendLine(`\nDesigner tools built successfully (${targetFramework}).`);
-              vscode.window.showInformationMessage(`WPF Designer Tools built (${targetFramework}).`);
-            } else {
-              channel.appendLine(`\nBuild FAILED (exit code ${code}).`);
-              vscode.window.showErrorMessage('Failed to build WPF Designer Tools. See "WPF Designer" output channel.');
-            }
+          restoreProc.on('error', (err: Error) => {
+            channel.appendLine(`ERROR: ${err.message}`);
+            vscode.window.showErrorMessage(`Restore error: ${err.message}`);
             resolve();
           });
 
-          proc.on('error', (err: Error) => {
-            try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
-            channel.appendLine(`ERROR: ${err.message}`);
-            vscode.window.showErrorMessage(`Build error: ${err.message}`);
-            resolve();
+          restoreProc.on('close', (restoreCode: number | null) => {
+            if (restoreCode !== 0) {
+              channel.appendLine(`\nRestore FAILED (exit code ${restoreCode}).`);
+              vscode.window.showErrorMessage('Failed to restore WPF Designer Tools. See "WPF Designer" output channel.');
+              resolve();
+              return;
+            }
+
+            const proc = cp.spawn(
+              dotnet,
+              ['build', submoduleCsproj, '--configuration', 'Release',
+                '--nologo', '--no-restore', '-maxcpucount:1', '-p:UseSharedCompilation=false'],
+              { shell: true }
+            );
+
+            proc.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
+            proc.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
+
+            proc.on('close', (code: number | null) => {
+              // Always remove the temp props file before reporting.
+              try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
+              channel.appendLine('  Removed temporary Directory.Build.props');
+
+              if (code === 0) {
+                const builtOutputDir = path.join(
+                  context.extensionPath,
+                  'external',
+                  'WpfDesigner',
+                  'XamlDesigner',
+                  'bin',
+                  'Release',
+                  targetFramework
+                );
+
+                try {
+                  syncBuiltDesignerOutput(builtOutputDir, outDir);
+                } catch (err) {
+                  channel.appendLine(`ERROR: Failed to stage built designer artifacts: ${err}`);
+                  vscode.window.showErrorMessage('Designer build succeeded, but staging the output failed. See "WPF Designer" output channel.');
+                  resolve();
+                  return;
+                }
+
+                writeDesignerTfm(outDir, targetFramework);
+                channel.appendLine(`\nDesigner tools built successfully (${targetFramework}).`);
+                vscode.window.showInformationMessage(`WPF Designer Tools built (${targetFramework}).`);
+              } else {
+                channel.appendLine(`\nBuild FAILED (exit code ${code}).`);
+                vscode.window.showErrorMessage('Failed to build WPF Designer Tools. See "WPF Designer" output channel.');
+              }
+              resolve();
+            });
+
+            proc.on('error', (err: Error) => {
+              try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
+              channel.appendLine(`ERROR: ${err.message}`);
+              vscode.window.showErrorMessage(`Build error: ${err.message}`);
+              resolve();
+            });
           });
         });
       });
     }
   );
+}
+
+function syncBuiltDesignerOutput(sourceDir: string, destinationDir: string): void {
+  if (!fs.existsSync(sourceDir)) {
+    throw new Error(`Built output directory not found: ${sourceDir}`);
+  }
+
+  fs.rmSync(destinationDir, { recursive: true, force: true });
+  fs.mkdirSync(destinationDir, { recursive: true });
+
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourcePath = path.join(sourceDir, entry.name);
+    const destinationPath = path.join(destinationDir, entry.name);
+
+    if (entry.isDirectory()) {
+      fs.cpSync(sourcePath, destinationPath, { recursive: true, force: true });
+    } else {
+      fs.copyFileSync(sourcePath, destinationPath);
+    }
+  }
+}
+
+function stopConflictingDesignerProcesses(dotnet: string, channel: vscode.OutputChannel): Promise<void> {
+  const imageNames = [
+    'VBCSCompiler.exe',
+    'XamlDesigner.exe',
+    'Demo.XamlDesigner.exe',
+  ];
+
+  const taskkillImage = (imageName: string): Promise<void> => new Promise(resolve => {
+    const proc = cp.spawn('taskkill', ['/F', '/IM', imageName], { shell: false });
+    proc.on('close', () => resolve());
+    proc.on('error', () => resolve());
+  });
+
+  return new Promise(resolve => {
+    const shutdown = cp.spawn(dotnet, ['build-server', 'shutdown'], { shell: true });
+    const finish = async (): Promise<void> => {
+      await Promise.all(imageNames.map(taskkillImage));
+      channel.appendLine('[Designer] Cleared conflicting build/design processes.');
+      resolve();
+    };
+
+    shutdown.on('close', () => { void finish(); });
+    shutdown.on('error', () => { void finish(); });
+  });
 }
 
 function isSdkMissing(output: string): boolean {

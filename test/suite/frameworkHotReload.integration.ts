@@ -30,6 +30,16 @@ export async function run(): Promise<void> {
   assert.ok(projectInfo, 'Expected parseProject to return project info for the net462 sample.');
   assert.strictEqual(projectInfo.targetFramework, 'net462', `Expected TFM "net462", got "${projectInfo.targetFramework}".`);
 
+  const detectedProject = await vscode.commands.executeCommand<string | null>(
+    'wpf._test.findProjectForFile',
+    mainWindowPath
+  );
+  assert.strictEqual(
+    detectedProject,
+    frameworkProjectPath,
+    'Expected linked MainWindow.xaml to resolve back to the net462 project when that workspace is open.'
+  );
+
   // 3. Wire the XAML file to the Framework project via the test helper.
   await vscode.commands.executeCommand('wpf._test.setProject', {
     filePath: mainWindowPath,

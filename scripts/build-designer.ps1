@@ -17,8 +17,8 @@
     MSBuild configuration to use (default: Release).
 
 .PARAMETER TargetFramework
-    Target framework to compile for.  Leave empty to auto-detect the highest
-    .NET SDK installed on this machine (recommended).
+    Target framework to compile for. Leave empty to auto-detect the highest
+    installed .NET Windows SDK.
     Override only when pinning to a specific version, e.g. net10.0-windows.
 
 .EXAMPLE
@@ -39,6 +39,7 @@ $SubmoduleRoot   = Join-Path $RepoRoot "external\WpfDesigner"
 $OutputDir       = Join-Path $RepoRoot "tools\XamlDesigner"
 $TfmFile         = Join-Path $OutputDir "designer.tfm"
 $TempProps       = Join-Path $SubmoduleRoot "Directory.Build.props"
+$BuiltOutputDir  = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$TargetFramework"
 
 # Verify submodule is initialised
 if (-not (Test-Path $SubmoduleCsproj)) {
@@ -56,6 +57,50 @@ Initialise it first:
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     Write-Error "dotnet CLI not found on PATH.  Install the .NET SDK from https://dot.net"
     exit 1
+}
+
+function Stop-ConflictingDesignerProcesses {
+    param(
+        [string]$RepoRootPath,
+        [string]$BuildOutputPath
+    )
+
+    try {
+        & dotnet build-server shutdown | Out-Null
+    } catch {
+        # Best effort only.
+    }
+
+    $lockingNames = @(
+        'VBCSCompiler.exe',
+        'XamlDesigner.exe',
+        'Demo.XamlDesigner.exe'
+    )
+
+    $repoPattern = [regex]::Escape($RepoRootPath)
+    $outputPattern = [regex]::Escape($BuildOutputPath)
+
+    try {
+        $candidates = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $name = $_.Name
+            if ($lockingNames -contains $name) {
+                return $true
+            }
+
+            if ($name -in @('MSBuild.exe', 'dotnet.exe') -and $_.CommandLine) {
+                return $_.CommandLine -match $repoPattern -or $_.CommandLine -match $outputPattern -or $_.CommandLine -match 'WpfDesigner' -or $_.CommandLine -match 'XamlDesigner'
+            }
+
+            return $false
+        }
+
+        foreach ($proc in $candidates) {
+            Write-Host "  Killing lock-holder: $($proc.Name) (pid $($proc.ProcessId))" -ForegroundColor DarkYellow
+            Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Write-Warning "Could not inspect or kill conflicting processes: $($_.Exception.Message)"
+    }
 }
 
 # Auto-detect highest installed .NET SDK when TargetFramework not specified
@@ -85,6 +130,8 @@ if (-not (Test-Path $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir | Out-Null
 }
 
+$BuiltOutputDir  = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$TargetFramework"
+
 # Write a temporary Directory.Build.props so every project in the submodule
 # inherits the same TargetFramework during restore AND build — no csproj edits needed.
 $propsContent = @"
@@ -99,17 +146,20 @@ Set-Content -Path $TempProps -Value $propsContent -Encoding UTF8
 Write-Host "  Wrote temporary Directory.Build.props ($TargetFramework)" -ForegroundColor DarkGray
 
 try {
+    Stop-ConflictingDesignerProcesses -RepoRootPath $RepoRoot -BuildOutputPath $OutputDir
+
     Write-Host ""
     Write-Host "Running: dotnet restore ..." -ForegroundColor Yellow
-    & dotnet restore "$SubmoduleCsproj" --nologo
+    & dotnet restore "$SubmoduleCsproj" --nologo -p:UseSharedCompilation=false
     if ($LASTEXITCODE -ne 0) { Write-Error "Restore failed with exit code $LASTEXITCODE."; exit $LASTEXITCODE }
 
     Write-Host "Running: dotnet build ..." -ForegroundColor Yellow
     & dotnet build "$SubmoduleCsproj" `
         --configuration $Configuration `
-        --output "$OutputDir" `
         --nologo `
-        --no-restore
+        --no-restore `
+        -maxcpucount:1 `
+        -p:UseSharedCompilation=false
     if ($LASTEXITCODE -ne 0) { Write-Error "Build failed with exit code $LASTEXITCODE."; exit $LASTEXITCODE }
 }
 finally {
@@ -119,6 +169,13 @@ finally {
 }
 
 # Record the TFM so the extension can check compatibility at launch time
+if (-not (Test-Path $BuiltOutputDir)) {
+    Write-Error "Expected built output directory was not found: $BuiltOutputDir"
+    exit 1
+}
+
+Get-ChildItem -Path $OutputDir -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Copy-Item -Path (Join-Path $BuiltOutputDir '*') -Destination $OutputDir -Recurse -Force
 Set-Content -Path $TfmFile -Value $TargetFramework -Encoding UTF8
 
 # Report result

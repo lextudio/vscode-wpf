@@ -27,6 +27,7 @@ namespace WpfHotReload.Runtime;
 
 public static class WpfHotReloadAgent
 {
+    private static readonly object LogSync = new();
     private static volatile bool _pipeListenerRunning;
     private static CancellationTokenSource? _pipeCts;
     private static HotReloadOverlay? _overlay;
@@ -34,6 +35,7 @@ public static class WpfHotReloadAgent
     private static int _initialHideWorkerStarted;
     private static int _overlayStartupWorkerStarted;
     private static readonly bool _startHiddenRequested = ReadBooleanEnvironmentVariable("WPF_HOTRELOAD_START_HIDDEN");
+    private static readonly string? LogPath = Environment.GetEnvironmentVariable("WPF_HOTRELOAD_LOG");
 
     public static string PipeName { get; } =
         Environment.GetEnvironmentVariable("WPF_HOTRELOAD_PIPE")
@@ -48,7 +50,31 @@ public static class WpfHotReloadAgent
 
     private static void Log(string message)
     {
-        Debug.WriteLine($"[WpfHotReload] {message}");
+        var line = $"[WpfHotReload] {DateTime.Now:O} {message}";
+        Debug.WriteLine(line);
+
+        if (string.IsNullOrWhiteSpace(LogPath))
+        {
+            return;
+        }
+
+        try
+        {
+            lock (LogSync)
+            {
+                var logDir = Path.GetDirectoryName(LogPath);
+                if (!string.IsNullOrWhiteSpace(logDir))
+                {
+                    Directory.CreateDirectory(logDir);
+                }
+
+                File.AppendAllText(LogPath, line + Environment.NewLine, Encoding.UTF8);
+            }
+        }
+        catch
+        {
+            // Never let diagnostics break the host app.
+        }
     }
 
     /// <summary>
@@ -77,6 +103,7 @@ public static class WpfHotReloadAgent
         };
         thread.Start();
         _pipeListenerRunning = true;
+        Log($"Pipe listener thread started for {name}");
     }
 
     private static bool ReadBooleanEnvironmentVariable(string name)
@@ -379,12 +406,13 @@ public static class WpfHotReloadAgent
             }
             catch (Exception ex)
             {
-                Log($"PipeListenerLoop error: {ex.GetType().Name}: {ex.Message}");
+                Log($"PipeListenerLoop error: {ex}");
                 // Connection broken, continue accepting
             }
         }
 
         _pipeListenerRunning = false;
+        Log($"PipeListenerLoop stopped, pipe={pipeName}");
     }
 
     private sealed class PipeRequest
@@ -883,12 +911,30 @@ public static class WpfHotReloadAgent
         try
         {
             var request = new PipeRequest();
-            var parts = json.Split(new[] { '"' }, System.StringSplitOptions.None);
-            for (int i = 0; i < parts.Length - 1; i++)
+            int pos = 0;
+            while (pos < json.Length)
             {
-                if (parts[i].EndsWith(":")) continue;
-                var key = parts[i].TrimEnd(':').Trim(',');
-                var value = parts[i + 1];
+                // Find the next key string
+                int keyOpen = json.IndexOf('"', pos);
+                if (keyOpen < 0) break;
+                int keyClose = FindJsonStringEnd(json, keyOpen + 1);
+                if (keyClose < 0) break;
+                string key = UnescapeJsonString(json, keyOpen + 1, keyClose);
+                pos = keyClose + 1;
+
+                // Skip ':' separator
+                int colon = json.IndexOf(':', pos);
+                if (colon < 0) break;
+                pos = colon + 1;
+
+                // Find opening '"' of the value
+                int valueOpen = json.IndexOf('"', pos);
+                if (valueOpen < 0) break;
+                int valueClose = FindJsonStringEnd(json, valueOpen + 1);
+                if (valueClose < 0) break;
+                string value = UnescapeJsonString(json, valueOpen + 1, valueClose);
+                pos = valueClose + 1;
+
                 switch (key)
                 {
                     case "kind": request.Kind = value; break;
@@ -903,6 +949,45 @@ public static class WpfHotReloadAgent
             return request;
         }
         catch { return null; }
+    }
+
+    // Returns the index of the closing unescaped '"', scanning from 'start'
+    // (the character immediately after the opening '"').
+    private static int FindJsonStringEnd(string s, int start)
+    {
+        for (int i = start; i < s.Length; i++)
+        {
+            if (s[i] == '\\') { i++; continue; } // skip escaped character
+            if (s[i] == '"') return i;
+        }
+        return -1;
+    }
+
+    private static string UnescapeJsonString(string s, int start, int end)
+    {
+        var sb = new StringBuilder(end - start);
+        for (int i = start; i < end; i++)
+        {
+            if (s[i] == '\\' && i + 1 < end)
+            {
+                i++;
+                switch (s[i])
+                {
+                    case '"':  sb.Append('"');  break;
+                    case '\\': sb.Append('\\'); break;
+                    case '/':  sb.Append('/');  break;
+                    case 'n':  sb.Append('\n'); break;
+                    case 'r':  sb.Append('\r'); break;
+                    case 't':  sb.Append('\t'); break;
+                    default:   sb.Append('\\'); sb.Append(s[i]); break;
+                }
+            }
+            else
+            {
+                sb.Append(s[i]);
+            }
+        }
+        return sb.ToString();
     }
 
     private static string ToJsonString(params string[] pairs)

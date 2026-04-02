@@ -21,7 +21,9 @@ import {
   launchDesigner,
   pushLiveXamlUpdate,
   restartDesignerSession,
+  setEventHandlerCallback,
 } from './designerLauncher';
+import { insertEventHandlerStub } from './codeBehindWriter';
 import { disposeStatusBar, getStatusBarItem, updateStatusBar } from './statusBar';
 import {
   getDesignerProjectContext,
@@ -51,6 +53,34 @@ export function activate(context: vscode.ExtensionContext): void {
   registerRuntimeHotReload(context);
   registerToolbox(context);
 
+  // Handle event handler creation requests from the visual designer.
+  setEventHandlerCallback(async msg => {
+    const codeBehindPath = msg.xamlPath.replace(/\.xaml$/i, '.xaml.cs');
+    if (!fs.existsSync(codeBehindPath)) {
+      vscode.window.showErrorMessage(
+        `Code-behind file not found: ${path.basename(codeBehindPath)}`
+      );
+      return;
+    }
+
+    const position = await insertEventHandlerStub(
+      codeBehindPath, msg.handlerName, msg.eventArgType
+    );
+    if (!position) {
+      vscode.window.showErrorMessage(
+        `Could not insert event handler stub in ${path.basename(codeBehindPath)}.`
+      );
+      return;
+    }
+
+    const uri = vscode.Uri.file(codeBehindPath);
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const editor = await vscode.window.showTextDocument(doc, { preserveFocus: false });
+    const range = new vscode.Range(position, position);
+    editor.selection = new vscode.Selection(position, position);
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+  });
+
   // -------------------------------------------------------------------------
   // Command: wpf.launchDesigner
   // -------------------------------------------------------------------------
@@ -77,8 +107,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       // 1. Resolve project
-      const designerContext = await getDesignerProjectContext(resource);
-      const projectPath = designerContext?.projectPath ?? await resolveProject(xamlPath);
+      const projectPath = await resolveProjectForAction(resource);
       if (!projectPath) {
         return; // User cancelled picker or no project found.
       }
@@ -229,8 +258,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      const designerContext = await getDesignerProjectContext(resource);
-      const projectPath = designerContext?.projectPath ?? await resolveProject(xamlPath);
+      const projectPath = await resolveProjectForAction(resource);
       if (!projectPath) {
         return;
       }
@@ -297,8 +325,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       await startLanguageServer(context);
 
-      const designerContext = await getDesignerProjectContext(resource);
-      const projectPath = designerContext?.projectPath ?? await resolveProject(xamlPath);
+      const projectPath = await resolveProjectForAction(resource);
       if (!projectPath) {
         return;
       }
@@ -413,7 +440,9 @@ export function activate(context: vscode.ExtensionContext): void {
       try {
         const uri = vscode.Uri.file(picked.detail);
         const document = await vscode.workspace.openTextDocument(uri);
+        selectedProjects.set(getWorkspaceFolderKey(picked.detail), projectPath);
         await vscode.window.showTextDocument(document, { preview: false });
+        updateStatusBar(vscode.window.activeTextEditor, projectPath);
       } catch (err) {
         vscode.window.showErrorMessage(`Failed to open XAML file: ${String(err)}`);
       }
@@ -476,6 +505,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('wpf._test.parseProject', (projectPath?: string) => {
       if (!projectPath) { return null; }
       return parseProject(projectPath);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf._test.findProjectForFile', async (filePath?: string) => {
+      if (!filePath) { return null; }
+      return findProjectForFile(filePath);
     })
   );
 
@@ -598,6 +634,39 @@ async function resolveProject(xamlPath: string): Promise<string | null> {
   return picked ?? null;
 }
 
+async function resolveProjectForAction(
+  resource: vscode.Uri,
+  allowPrompt = true
+): Promise<string | null> {
+  const xamlPath = resource.fsPath;
+  const folderKey = getWorkspaceFolderKey(xamlPath);
+
+  const cached = selectedProjects.get(folderKey);
+  if (cached) {
+    return cached;
+  }
+
+  const detected = await findProjectForFile(xamlPath);
+  if (detected) {
+    selectedProjects.set(folderKey, detected);
+    updateStatusBar(vscode.window.activeTextEditor, detected);
+    return detected;
+  }
+
+  const designerContext = await getDesignerProjectContext(resource);
+  if (designerContext?.projectPath) {
+    selectedProjects.set(folderKey, designerContext.projectPath);
+    updateStatusBar(vscode.window.activeTextEditor, designerContext.projectPath);
+    return designerContext.projectPath;
+  }
+
+  if (!allowPrompt) {
+    return null;
+  }
+
+  return resolveProject(xamlPath);
+}
+
 function getCachedProject(filePath: string): string | undefined {
   const key = getWorkspaceFolderKey(filePath);
   return selectedProjects.get(key);
@@ -651,8 +720,7 @@ async function scheduleHotReload(document: vscode.TextDocument): Promise<void> {
 async function pushHotReload(document: vscode.TextDocument): Promise<void> {
   const resource = document.uri;
   const xamlPath = resource.fsPath;
-  const designerContext = await getDesignerProjectContext(resource);
-  const projectPath = designerContext?.projectPath ?? getCachedProject(xamlPath) ?? await findProjectForFile(xamlPath);
+  const projectPath = await resolveProjectForAction(resource, false);
   if (!projectPath) {
     return;
   }

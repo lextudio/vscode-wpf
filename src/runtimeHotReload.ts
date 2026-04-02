@@ -14,6 +14,7 @@ interface RuntimeSessionInfo {
   warnedUnsupportedApply: boolean;
   pipeName: string;
   pipeReady: boolean;
+  logFilePath?: string;
 }
 
 let outputChannel: vscode.OutputChannel | undefined;
@@ -125,8 +126,15 @@ export async function startRuntimeHotReloadSession(
 
   const pipeName = `wpf-hotreload-${crypto.randomUUID()}`;
   const env: Record<string, string | undefined> = { ...process.env };
+  const logFilePath = path.join(
+    extensionPath ?? process.cwd(),
+    '.logs',
+    'wpf-hotreload',
+    `${pipeName}.log`
+  );
   env['WPF_HOTRELOAD_PIPE'] = pipeName;
   env['WPF_HOTRELOAD_START_HIDDEN'] = '0';
+  env['WPF_HOTRELOAD_LOG'] = logFilePath;
 
   if (helperAssemblyPath) {
     if (isFramework) {
@@ -148,10 +156,21 @@ export async function startRuntimeHotReloadSession(
     return false;
   }
   channel.appendLine(`[Runtime] Pipe name: ${pipeName}`);
+  channel.appendLine(`[Runtime] Runtime log: ${logFilePath}`);
 
   const program = launchTarget.program;
   const args = launchTarget.args;
   const cwd = launchTarget.cwd;
+
+  if (helperAssemblyPath && isFramework) {
+    try {
+      stageFrameworkRuntimeHelper(helperAssemblyPath, path.dirname(program));
+    } catch (err) {
+      channel.appendLine(`[Runtime] Failed to stage framework helper: ${String(err)}`);
+      vscode.window.showErrorMessage('Failed to stage the .NET Framework hot reload helper.');
+      return false;
+    }
+  }
 
   channel.appendLine(`[Runtime] Launching ${program} ${args.join(' ')}`.trim());
 
@@ -176,6 +195,7 @@ export async function startRuntimeHotReloadSession(
     warnedUnsupportedApply: false,
     pipeName,
     pipeReady: false,
+    logFilePath,
   };
 
   runtimeSessionsByProject.set(sessionKey, info);
@@ -211,12 +231,17 @@ export async function pushRuntimeXamlUpdate(
   info.xamlPath = xamlPath;
 
   if (!info.pipeReady) {
-    const startupReady = await probeRuntimePipeReady(info.pipeName);
+    const startupReady = await waitForRuntimePipeReady(info.pipeName, info.logFilePath);
     if (startupReady) {
       info.pipeReady = true;
       getOutputChannel().appendLine(`[Runtime] Runtime agent detected on pipe ${info.pipeName}.`);
     } else {
       getOutputChannel().appendLine(`[Runtime] Runtime agent not ready on pipe ${info.pipeName}. The app may still be starting.`);
+      const logTail = readRuntimeLogTail(info.logFilePath);
+      if (logTail) {
+        getOutputChannel().appendLine('[Runtime] Last runtime log lines:');
+        getOutputChannel().appendLine(logTail);
+      }
       vscode.window.showWarningMessage(
         'WPF app is still starting. Wait for the app to load and try again.'
       );
@@ -305,6 +330,28 @@ function sendViaPipe(
 async function probeRuntimePipeReady(pipeName: string): Promise<boolean> {
   const response = await sendPipeRequest(pipeName, { kind: 'query', query: 'agent.ready' });
   return response?.result === 'ok' && response.value === '1';
+}
+
+async function waitForRuntimePipeReady(pipeName: string, logFilePath?: string): Promise<boolean> {
+  const startedAt = Date.now();
+  const timeoutMs = 15000;
+  const retryDelayMs = 300;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await probeRuntimePipeReady(pipeName)) {
+      return true;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+  }
+
+  const logTail = readRuntimeLogTail(logFilePath);
+  if (logTail) {
+    getOutputChannel().appendLine('[Runtime] Runtime agent did not become ready within 15s.');
+    getOutputChannel().appendLine(logTail);
+  }
+
+  return false;
 }
 
 function sendPipeRequest(
@@ -456,4 +503,31 @@ function isRuntimeHelperUpToDate(projectPath: string, helperDllPath: string): bo
   }
 
   return true;
+}
+
+function stageFrameworkRuntimeHelper(helperAssemblyPath: string, destinationDir: string): void {
+  const helperDir = path.dirname(helperAssemblyPath);
+
+  for (const entry of fs.readdirSync(helperDir, { withFileTypes: true })) {
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    const sourcePath = path.join(helperDir, entry.name);
+    const destinationPath = path.join(destinationDir, entry.name);
+    fs.copyFileSync(sourcePath, destinationPath);
+  }
+}
+
+function readRuntimeLogTail(logFilePath?: string): string | undefined {
+  if (!logFilePath || !fs.existsSync(logFilePath)) {
+    return undefined;
+  }
+
+  try {
+    const lines = fs.readFileSync(logFilePath, 'utf8').trim().split(/\r?\n/).filter(Boolean);
+    return lines.slice(-20).join('\n');
+  } catch {
+    return undefined;
+  }
 }

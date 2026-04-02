@@ -362,6 +362,89 @@ For custom/user controls:
 
 ---
 
+### 7. Event Handler Generation (Designer → VS Code)
+
+When the user double-clicks a control in the visual designer, the extension creates an event handler stub in the code-behind file and navigates VS Code to it.
+
+#### Full flow
+
+```
+User double-clicks Button in XamlDesigner
+        │
+        ▼
+MoveLogic.HandleDoubleClick()
+  → IEventHandlerService.GetDefaultEvent(item)   // "Click"
+  → IEventHandlerService.CreateEventHandler(prop)
+        │
+        ├─ Sets XAML attribute: Click="Button_Click"
+        │  (saved to disk by designer auto-save)
+        │
+        └─ Sends callback pipe message to VS Code:
+           { command:"createEventHandler", xamlPath, handlerName,
+             eventName, eventArgType }
+                │
+                ▼
+        VS Code extension (designerLauncher.ts callback server)
+          → finds <File>.xaml.cs (code-behind)
+          → inserts method stub if not already present
+          → opens file, places cursor inside stub body
+          → brings VS Code window to foreground
+```
+
+#### Callback pipe protocol
+
+A second named pipe is used for **designer → VS Code** communication, separate from the existing inbound pipe.
+
+**Launch arguments:**
+```
+XamlDesigner.exe --pipe <inbound-pipe> --callback <callback-pipe> <file.xaml> [dlls…]
+```
+
+**Callback message (JSON, sent by designer):**
+```json
+{
+  "command": "createEventHandler",
+  "xamlPath": "C:\\project\\MainWindow.xaml",
+  "handlerName": "Button_Click",
+  "eventName": "Click",
+  "eventArgType": "System.Windows.RoutedEventArgs"
+}
+```
+
+The designer connects as a **pipe client** to the callback pipe (VS Code is the server) and sends the JSON payload when an event handler is requested, then closes the connection.
+
+#### IEventHandlerService implementation (`VsCodeEventHandlerService.cs`)
+
+Registered per-document in `Document.UpdateDesign()` via `XamlLoadSettings.CustomServiceRegisterFunctions`.
+
+- **`GetDefaultEvent(DesignItem)`** — uses `TypeDescriptor.GetDefaultEvent(item.ComponentType)` to look up the type's `[DefaultEvent]` attribute via reflection.
+- **`CreateEventHandler(DesignItemProperty)`** — generates handler name (`<ElementName>_<EventName>`), sets the XAML attribute value via `eventProperty.SetValue(handlerName)` inside a change group (so it is undo-able), then sends the callback message.
+
+#### Handler name generation
+
+| XAML attribute | Handler name |
+|---|---|
+| `x:Name="okButton"` | `okButton_Click` |
+| *(no name)* | `Button_Click` |
+| *(no name, second Button)* | `Button_Click` (duplicate — VS Code navigates to existing stub) |
+
+#### Code-behind stub insertion (`src/codeBehindWriter.ts`)
+
+1. Derive code-behind path: `<file>.xaml` → `<file>.xaml.cs`.
+2. If the method already exists, skip insertion and navigate to it.
+3. Detect indentation style from existing file content.
+4. Insert before the class closing `}`:
+   ```csharp
+   private void Button_Click(object sender, RoutedEventArgs e)
+   {
+       
+   }
+   ```
+5. Map `eventArgType` to its short C# name (`System.Windows.RoutedEventArgs` → `RoutedEventArgs`).
+6. Apply via `vscode.WorkspaceEdit` (one undo step).
+
+---
+
 ## File Structure
 
 ```
@@ -370,7 +453,8 @@ vscode-wpf/
 │   ├── extension.ts            ← main activation + command wiring
 │   ├── runtimeHotReload.ts     ← hot reload session, process launch, pipe communication
 │   ├── projectDiscovery.ts     ← project/solution detection, launch target resolution
-│   ├── designerLauncher.ts     ← build + spawn designer
+│   ├── designerLauncher.ts     ← build + spawn designer, callback pipe server
+│   ├── codeBehindWriter.ts     ← event handler stub insertion into .xaml.cs files
 │   ├── statusBar.ts            ← status bar item
 │   └── WpfHotReload.Runtime/   ← .NET startup hook helper (injected into WPF app)
 │       ├── StartupHook.cs      ← DOTNET_STARTUP_HOOKS entry point

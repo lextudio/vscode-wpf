@@ -84,6 +84,11 @@ export function isWpfProject(projectPath: string): boolean {
  * looking for a WPF .csproj file. Returns the first one found, or null.
  */
 export async function findProjectForFile(xamlFilePath: string): Promise<string | null> {
+  const owningProject = await findOwningWorkspaceProjectForFile(xamlFilePath);
+  if (owningProject) {
+    return owningProject;
+  }
+
   const workspaceFolders = vscode.workspace.workspaceFolders;
   const roots = workspaceFolders ? workspaceFolders.map(f => f.uri.fsPath) : [];
 
@@ -111,6 +116,44 @@ export async function findProjectForFile(xamlFilePath: string): Promise<string |
   }
 
   return null;
+}
+
+async function findOwningWorkspaceProjectForFile(xamlFilePath: string): Promise<string | null> {
+  const normalizedXamlPath = normalizeFsPath(xamlFilePath);
+  const projects = await findProjectsInWorkspace();
+
+  for (const projectPath of projects) {
+    if (projectExplicitlyIncludesFile(projectPath, normalizedXamlPath)) {
+      return projectPath;
+    }
+  }
+
+  return null;
+}
+
+function projectExplicitlyIncludesFile(projectPath: string, normalizedFilePath: string): boolean {
+  try {
+    const xml = fs.readFileSync(projectPath, 'utf8');
+    const projectDir = path.dirname(projectPath);
+    const includePattern = /<(?:Page|ApplicationDefinition|Resource|Content|None)\b[^>]*\b(?:Include|Update)\s*=\s*["']([^"']+\.(?:xaml|xml))["'][^>]*>/ig;
+
+    let match: RegExpExecArray | null;
+    while ((match = includePattern.exec(xml)) !== null) {
+      const includePath = match[1];
+      if (!includePath) {
+        continue;
+      }
+
+      const absoluteIncludePath = normalizeFsPath(path.resolve(projectDir, includePath.replace(/[\\/]/g, path.sep)));
+      if (absoluteIncludePath === normalizedFilePath) {
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
 }
 
 /**
@@ -341,4 +384,9 @@ function xmlValue(xml: string, tag: string): string | null {
   const re = new RegExp(`<${tag}[^>]*>([^<]+)</${tag}>`, 'i');
   const m = re.exec(xml);
   return m ? m[1].trim() : null;
+}
+
+function normalizeFsPath(filePath: string): string {
+  const normalized = path.normalize(filePath);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
