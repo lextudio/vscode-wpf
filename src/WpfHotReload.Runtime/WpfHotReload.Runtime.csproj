@@ -11,6 +11,11 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net462'">
+    <!-- CS8632: nullable annotation ? used outside #nullable context — expected on net462 -->
+    <NoWarn>$(NoWarn);8632</NoWarn>
+  </PropertyGroup>
+
   <ItemGroup Condition="'$(TargetFramework)' == 'net462'">
     <Reference Include="System" />
     <Reference Include="System.Xaml" />

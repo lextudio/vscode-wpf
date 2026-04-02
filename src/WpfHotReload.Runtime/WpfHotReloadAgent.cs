@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Text;
 #if !NETFRAMEWORK
 using System.Text.Json;
@@ -13,7 +14,7 @@ using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
-using System.Windows.Documents;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
@@ -30,7 +31,7 @@ public static class WpfHotReloadAgent
     private static readonly object LogSync = new();
     private static volatile bool _pipeListenerRunning;
     private static CancellationTokenSource? _pipeCts;
-    private static HotReloadOverlay? _overlay;
+    private static HotReloadOverlayWindow? _overlay;
     private static bool _previewHostHiddenByAgent;
     private static int _initialHideWorkerStarted;
     private static int _overlayStartupWorkerStarted;
@@ -479,7 +480,7 @@ public static class WpfHotReloadAgent
         public string CanEditForeground { get; set; } = "False";
     }
 
-    // ── Overlay toolbar ──────────────────────────────────────────────────
+    // ── Overlay window ───────────────────────────────────────────────────
 
     internal enum OverlayState
     {
@@ -534,23 +535,13 @@ public static class WpfHotReloadAgent
     {
         try
         {
-            var adornerLayer = AdornerLayer.GetAdornerLayer(mainWindow.Content as UIElement);
-            if (adornerLayer is not null && mainWindow.Content is UIElement rootElement)
-            {
-                _overlay = new HotReloadOverlay(rootElement);
-                adornerLayer.Add(_overlay);
-                Log("Overlay toolbar injected via AdornerLayer.");
-            }
-            else
-            {
-                // Fallback: inject as a Popup
-                _overlay = null;
-                Log("AdornerLayer not available; overlay toolbar skipped.");
-            }
+            _overlay = new HotReloadOverlayWindow(mainWindow);
+            _overlay.Show();
+            Log("Overlay injected into title bar.");
         }
         catch (Exception ex)
         {
-            Log($"Failed to inject overlay toolbar: {ex.Message}");
+            Log($"Failed to inject overlay: {ex.Message}");
         }
     }
 
@@ -560,136 +551,146 @@ public static class WpfHotReloadAgent
     }
 
     /// <summary>
-    /// A lightweight adorner that displays a hot reload status bar at the top of the window.
+    /// A transparent, click-through window that sits over the host window's title bar
+    /// to show hot reload status — similar to the Visual Studio indicator.
     /// </summary>
-    private sealed class HotReloadOverlay : Adorner
+    private sealed class HotReloadOverlayWindow : Window
     {
-        private readonly Border _border;
+        // Win32 constants
+        private const int GWL_EXSTYLE   = -20;
+        private const int WS_EX_TRANSPARENT  = 0x00000020;
+        private const int WS_EX_NOACTIVATE   = 0x08000000;
+        private const int WS_EX_TOOLWINDOW   = 0x00000080;
+
+        private const int SM_CYSIZEFRAME = 33; // vertical resize border height (pixels)
+
+        [DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hwnd, int nIndex);
+
+        [DllImport("user32.dll")]
+        private static extern int SetWindowLong(IntPtr hwnd, int nIndex, int dwNewLong);
+
+        [DllImport("user32.dll")]
+        private static extern int GetSystemMetrics(int nIndex);
+
+        private readonly Window _host;
         private readonly TextBlock _label;
+        private readonly Border _border;
         private DispatcherTimer? _fadeTimer;
-        private bool _collapsed;
 
-        // Drag state
-        private bool _isDragging;
-        private Point _dragStart;      // mouse position when drag began (relative to adorner)
-        private Point _position;       // top-left of the border in adorner coordinates
-        private bool _positionSet;     // false until the user first drags (use default centering until then)
-
-        public HotReloadOverlay(UIElement adornedElement) : base(adornedElement)
+        public HotReloadOverlayWindow(Window host)
         {
-            IsHitTestVisible = true;
+            _host = host;
+
+            WindowStyle   = WindowStyle.None;
+            AllowsTransparency = true;
+            Background    = Brushes.Transparent;
+            ShowInTaskbar = false;
+            ResizeMode    = ResizeMode.NoResize;
+            Focusable     = false;
+            IsHitTestVisible = false;
+            Owner         = host;
+            SizeToContent = SizeToContent.WidthAndHeight;
 
             _label = new TextBlock
             {
-                Text = "\U0001F525 Hot Reload",
+                Text       = "\U0001F525",
+                ToolTip    = "Hot Reload active",
                 Foreground = Brushes.White,
-                FontSize = 11,
+                FontSize   = 11,
                 FontFamily = new FontFamily("Segoe UI"),
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(6, 0, 0, 0),
-            };
-
-            var collapseButton = new Button
-            {
-                Content = "\u2715",
-                FontSize = 10,
-                Foreground = Brushes.White,
-                Background = Brushes.Transparent,
-                BorderThickness = new Thickness(0),
-                Cursor = System.Windows.Input.Cursors.Hand,
-                Padding = new Thickness(4, 0, 4, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(4, 0, 4, 0),
-            };
-            collapseButton.Click += (_, _) => ToggleCollapse();
-
-            var panel = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Children = { _label, collapseButton },
             };
 
             _border = new Border
             {
-                Background = new SolidColorBrush(Color.FromArgb(200, 40, 40, 40)),
-                CornerRadius = new CornerRadius(4),
-                Padding = new Thickness(4, 2, 4, 2),
-                Cursor = System.Windows.Input.Cursors.SizeAll,
-                Child = panel,
+                Background    = new SolidColorBrush(Color.FromArgb(200, 40, 40, 40)),
+                CornerRadius  = new CornerRadius(3),
+                Padding       = new Thickness(6, 2, 6, 2),
+                Margin        = new Thickness(0),
+                IsHitTestVisible = false,
+                Child         = _label,
             };
 
-            _border.MouseLeftButtonDown += OnBorderMouseDown;
-            _border.MouseLeftButtonUp += OnBorderMouseUp;
-            _border.MouseMove += OnBorderMouseMove;
+            Content = _border;
 
-            AddVisualChild(_border);
+            PositionOverTitleBar();
+            host.LocationChanged += (_, _) => PositionOverTitleBar();
+            host.SizeChanged     += (_, _) => PositionOverTitleBar();
+            host.StateChanged    += (_, _) =>
+            {
+                Visibility = host.WindowState == WindowState.Minimized
+                    ? Visibility.Collapsed
+                    : Visibility.Visible;
+                PositionOverTitleBar();
+            };
+            host.Closed += (_, _) => Close();
         }
 
-        private void OnBorderMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        protected override void OnSourceInitialized(EventArgs e)
         {
-            _isDragging = true;
-            _dragStart = e.GetPosition(this);
-            // Capture so we keep getting events if the mouse leaves the border
-            _border.CaptureMouse();
-            e.Handled = true;
+            base.OnSourceInitialized(e);
+            // Make the window transparent to mouse input and prevent it stealing focus.
+            var hwnd = new WindowInteropHelper(this).Handle;
+            var style = GetWindowLong(hwnd, GWL_EXSTYLE);
+            SetWindowLong(hwnd, GWL_EXSTYLE,
+                style | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
         }
 
-        private void OnBorderMouseUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        private void PositionOverTitleBar()
         {
-            if (!_isDragging) return;
-            _isDragging = false;
-            _border.ReleaseMouseCapture();
-            e.Handled = true;
+            if (_host.WindowState == WindowState.Minimized)
+                return;
+
+            // Caption height in device-independent units.
+            var captionHeight = SystemParameters.WindowCaptionHeight;
+
+            // Resize border thickness in DIP. SM_CXSIZEFRAME / SM_CYSIZEFRAME return pixels;
+            // divide by the DPI scale factor to get WPF device-independent units.
+            // SystemParameters.ResizeBorderThickness is .NET 5+ only so we use GetSystemMetrics.
+            var dpi = GetDpiScale();
+            var borderTop = GetSystemMetrics(SM_CYSIZEFRAME) / dpi;
+
+            // Measure badge so we can center it in the caption band.
+            _border.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            var badgeHeight = _border.DesiredSize.Height;
+            var badgeWidth  = _border.DesiredSize.Width;
+
+            // X: horizontally centred in the window.
+            var x = _host.Left + (_host.Width - badgeWidth) / 2;
+            // Y: vertically centred in the caption strip.
+            var y = _host.Top + borderTop + (captionHeight - badgeHeight) / 2;
+
+            Left = x;
+            Top  = y;
         }
 
-        private void OnBorderMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+        private double GetDpiScale()
         {
-            if (!_isDragging) return;
-
-            var current = e.GetPosition(this);
-            var delta = current - _dragStart;
-
-            var newX = _position.X + delta.X;
-            var newY = _position.Y + delta.Y;
-
-            // Clamp so the toolbar stays inside the adorned element bounds
-            var adornerSize = RenderSize;
-            var borderSize = _border.RenderSize;
-            newX = Math.Max(0, Math.Min(newX, adornerSize.Width - borderSize.Width));
-            newY = Math.Max(0, Math.Min(newY, adornerSize.Height - borderSize.Height));
-
-            _position = new Point(newX, newY);
-            _positionSet = true;
-            _dragStart = current;
-
-            InvalidateArrange();
-            InvalidateVisual();
-            e.Handled = true;
+            var source = PresentationSource.FromVisual(_host);
+            return source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
         }
 
         public void UpdateStatus(OverlayState state, string message)
         {
             _fadeTimer?.Stop();
 
-            if (_collapsed && state != OverlayState.Error)
-            {
-                return;
-            }
-
             switch (state)
             {
                 case OverlayState.Connected:
-                    _label.Text = "\U0001F525 Hot Reload";
+                    _label.Text = "\U0001F525";
+                    _label.ToolTip = "Hot Reload active";
                     _border.Background = new SolidColorBrush(Color.FromArgb(200, 40, 40, 40));
                     break;
                 case OverlayState.Applying:
-                    _label.Text = "\u27F3 Applying\u2026";
+                    _label.Text = "\u27F3";
+                    _label.ToolTip = "Applying\u2026";
                     _border.Background = new SolidColorBrush(Color.FromArgb(200, 30, 80, 160));
                     break;
                 case OverlayState.Applied:
-                    _label.Text = "\u2713 Updated";
+                    _label.Text = "\u2713";
+                    _label.ToolTip = "Updated";
                     _border.Background = new SolidColorBrush(Color.FromArgb(200, 30, 120, 50));
-                    // Revert to idle after 2 seconds
                     _fadeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
                     _fadeTimer.Tick += (_, _) =>
                     {
@@ -699,65 +700,16 @@ public static class WpfHotReloadAgent
                     _fadeTimer.Start();
                     break;
                 case OverlayState.Error:
-                    _label.Text = "\u2717 Error";
+                    _label.Text = "\u2717";
                     _label.ToolTip = message;
                     _border.Background = new SolidColorBrush(Color.FromArgb(200, 160, 30, 30));
                     break;
                 case OverlayState.Disconnected:
-                    _label.Text = "\u25CB Disconnected";
+                    _label.Text = "\u25CB";
+                    _label.ToolTip = "Disconnected";
                     _border.Background = new SolidColorBrush(Color.FromArgb(200, 120, 120, 40));
                     break;
             }
-        }
-
-        private void ToggleCollapse()
-        {
-            _collapsed = !_collapsed;
-            _label.Visibility = _collapsed ? Visibility.Collapsed : Visibility.Visible;
-            if (_collapsed)
-            {
-                _label.Text = "\U0001F525";
-            }
-            else
-            {
-                UpdateStatus(OverlayState.Connected, "");
-            }
-        }
-
-        protected override int VisualChildrenCount => 1;
-
-        protected override Visual GetVisualChild(int index) => _border;
-
-        protected override Size MeasureOverride(Size constraint)
-        {
-            _border.Measure(constraint);
-            return _border.DesiredSize;
-        }
-
-        protected override Size ArrangeOverride(Size finalSize)
-        {
-            var borderSize = _border.DesiredSize;
-
-            Point origin;
-            if (_positionSet)
-            {
-                // Clamp to keep the toolbar fully visible after window resize
-                var x = Math.Max(0, Math.Min(_position.X, finalSize.Width - borderSize.Width));
-                var y = Math.Max(0, Math.Min(_position.Y, finalSize.Height - borderSize.Height));
-                origin = new Point(x, y);
-            }
-            else
-            {
-                // Default: centered horizontally at the top
-                origin = new Point((finalSize.Width - borderSize.Width) / 2, 0);
-            }
-
-            _border.Arrange(new Rect(origin, borderSize));
-
-            // Keep _position in sync with the clamped origin so dragging starts correctly
-            _position = origin;
-
-            return finalSize;
         }
     }
 
