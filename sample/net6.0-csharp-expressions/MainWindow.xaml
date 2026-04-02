@@ -3,8 +3,7 @@
   - Simpler XAML: no explicit xmlns declarations at file head.
   - C# expressions: `{cs: ...}` values are emitted as direct C# in WXSG output.
 -->
-<Window xmlns:local="clr-namespace:sample"
-        x:Class="sample.MainWindow"
+<Window x:Class="sample.MainWindow"
         Title="{cs: string.Concat(&quot;WXSG — &quot;, &quot;C# Expressions + Simpler XAML&quot;)}"
         Width="{cs: 520}"
         Height="{cs: 420}">

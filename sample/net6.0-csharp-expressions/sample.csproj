@@ -1,4 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net6.0-windows</TargetFramework>
@@ -7,89 +8,15 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>sample</RootNamespace>
 
-    <!--
-      Enable WXSG (WPF XAML Source Generator).
-
-      When true:
-        1. Page / ApplicationDefinition items are passed to the WXSG source generator
-           via AdditionalFiles so it can produce pure-C# InitializeComponent code.
-        2. WPF's default MarkupCompile/BAML pipeline is disabled for XAML files.
-        3. Runtime initialization is source-generated object graph construction.
-    -->
+    <!-- Opt in to WXSG. XamlSourceGenEnabled and local xmlns prefix are auto-configured. -->
     <WpfXsgEnabled>true</WpfXsgEnabled>
 
-    <!--
-      XamlSourceGenEnabled=true activates the XSG incremental source generator.
-      The generator reads this via build_property.XamlSourceGenEnabled
-      (see MsBuildConfigurationSource). Without it the generator is a no-op.
-    -->
-    <XamlSourceGenEnabled>true</XamlSourceGenEnabled>
-
-    <!--
-      Local NuGet package feed for WXSG packages built from this repo.
-      Populate with:
-        dotnet pack src\XamlToCSharpGenerator.Generator.WPF\XamlToCSharpGenerator.Generator.WPF.csproj -o artifacts\local-packages
-    -->
-    <LocalNuGetPackagesDir>$(MSBuildProjectDirectory)\..\..\artifacts\local-packages</LocalNuGetPackagesDir>
-    <RestoreSources>$(LocalNuGetPackagesDir);$(RestoreSources)</RestoreSources>
+    <!-- Local NuGet feed for packages built from this repo (dotnet pack → artifacts\local-packages). -->
+    <RestoreSources>$(MSBuildProjectDirectory)\..\..\artifacts\local-packages;$(RestoreSources)</RestoreSources>
   </PropertyGroup>
 
   <ItemGroup>
-    <!--
-      Local package consumption: WXSG generator + bundled analyzer dependencies.
-      Note: Build.WPF package is still TODO, so this sample keeps explicit WXSG
-      AdditionalFiles/Page wiring below.
-    -->
-    <PackageReference Include="XamlToCSharpGenerator.Generator.WPF" Version="1.0.0-local.1" PrivateAssets="all" />
+    <PackageReference Include="XamlToCSharpGenerator.Generator.WPF" Version="1.0.0-local.5" PrivateAssets="all" />
   </ItemGroup>
 
-  <!--
-    Make AdditionalFiles metadata visible to Roslyn source generators.
-    This mirrors what XamlToCSharpGenerator.Build.props does for Avalonia.
-  -->
-  <ItemGroup Condition="'$(WpfXsgEnabled)' == 'true'">
-    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="SourceItemGroup" />
-    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="TargetPath" />
-    <!--
-      Make MSBuild properties visible to the Roslyn source generator.
-      XamlSourceGenEnabled is the master on/off switch read by MsBuildConfigurationSource.
-      RootNamespace is used for namespace inference in generated code.
-    -->
-    <CompilerVisibleProperty Include="XamlSourceGenEnabled" />
-    <CompilerVisibleProperty Include="RootNamespace" />
-  </ItemGroup>
-
-  <!--
-    Phase 3: turn off WPF's Page/ApplicationDefinition inputs so BAML codegen is bypassed.
-    XAML files are still included as None and surfaced to source generators via AdditionalFiles.
-  -->
-  <ItemGroup Condition="'$(WpfXsgEnabled)' == 'true'">
-    <Page Remove="@(Page)" />
-    <ApplicationDefinition Remove="@(ApplicationDefinition)" />
-    <None Include="App.xaml" Condition="Exists('App.xaml')" />
-    <None Include="**\*.xaml" Exclude="App.xaml;bin\**;obj\**" />
-  </ItemGroup>
-
-  <!--
-    Pass XAML files to WXSG via AdditionalFiles.
-    SourceItemGroup metadata keeps WPF build contract semantics for App.xaml vs Page files.
-  -->
-  <Target Name="_WxsgExposeXamlToGenerator"
-          BeforeTargets="GenerateMSBuildEditorConfigFileShouldRun"
-          Condition="'$(WpfXsgEnabled)' == 'true' and !$(MSBuildProjectName.Contains('_wpftmp'))">
-    <ItemGroup>
-      <_WxsgPage Include="@(None)"
-                 Condition="'%(None.Extension)' == '.xaml' and '%(None.Filename)%(None.Extension)' != 'App.xaml'" />
-      <_WxsgApplicationDefinition Include="@(None)"
-                                  Condition="'%(None.Extension)' == '.xaml' and '%(None.Filename)%(None.Extension)' == 'App.xaml'" />
-      <AdditionalFiles Include="@(_WxsgPage)">
-        <SourceItemGroup>Page</SourceItemGroup>
-        <TargetPath>%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
-      </AdditionalFiles>
-      <AdditionalFiles Include="@(_WxsgApplicationDefinition)">
-        <SourceItemGroup>ApplicationDefinition</SourceItemGroup>
-        <TargetPath>%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
-      </AdditionalFiles>
-    </ItemGroup>
-  </Target>
 </Project>
