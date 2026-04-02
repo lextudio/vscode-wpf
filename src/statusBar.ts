@@ -11,7 +11,7 @@ export function getStatusBarItem(): vscode.StatusBarItem {
   if (!statusBarItem) {
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.command = 'wpf.selectProject';
-    statusBarItem.tooltip = 'WPF project context for hot reload and designer actions — click to change';
+    statusBarItem.tooltip = 'WPF project context for Hot Reload and designer actions — click to change';
   }
   return statusBarItem;
 }

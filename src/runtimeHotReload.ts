@@ -99,7 +99,7 @@ export async function startRuntimeHotReloadSession(
     const result = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `Building ${path.basename(projectPath)} for hot reload…`,
+        title: `Building ${path.basename(projectPath)} for Hot Reload…`,
         cancellable: true,
       },
       (_progress, token) => buildProject(projectPath, token)
@@ -359,7 +359,11 @@ async function ensureRuntimeHelperBuilt(
   const helperDll = path.join(outputDir, 'WpfHotReload.Runtime.dll');
   const projPath = path.join(extensionPath, 'src', 'WpfHotReload.Runtime', 'WpfHotReload.Runtime.csproj');
   if (!fs.existsSync(projPath)) {
-    vscode.window.showErrorMessage('WPF hot reload runtime helper project was not found.');
+    // Running from an installed .vsix — no source tree. Use the pre-built DLL.
+    if (fs.existsSync(helperDll)) {
+      return helperDll;
+    }
+    vscode.window.showErrorMessage('WPF hot reload runtime helper was not found.');
     return null;
   }
 

@@ -13,11 +13,22 @@ $targets = @(
 	'win32-arm64'
 )
 
+Write-Host 'Removing old .vsix files from destination folder...'
+Get-ChildItem -Path $here -Filter *.vsix -File | Remove-Item -Force
+
 Write-Host 'Syncing package.json version from latest git tag (if present)...'
 .\update-version.ps1
 
 Write-Host 'Building extension (esbuild)...'
 npm run build
+
+Write-Host 'Building WpfHotReload.Runtime helper (netcoreapp3.0 + net462)...'
+$helperProj = Join-Path $here 'src\WpfHotReload.Runtime\WpfHotReload.Runtime.csproj'
+foreach ($tfm in @('netcoreapp3.0', 'net462')) {
+	$outDir = Join-Path $here "tools\WpfHotReload.Runtime\$tfm\"
+	dotnet build $helperProj -c Release -f $tfm -nologo "-p:OutDir=$outDir"
+	if ($LASTEXITCODE -ne 0) { throw "Failed to build WpfHotReload.Runtime for $tfm" }
+}
 
 $pkg = Get-Content package.json -Raw | ConvertFrom-Json
 $createdVsix = @()

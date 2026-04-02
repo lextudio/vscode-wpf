@@ -20,7 +20,7 @@ development experience for WPF with open source components
 - Activates on `*.xaml` files.
 - Click the `Hot Reload` or `Launch Designer` actions on the top-right of your XAML editor tab.
 - Use the Explorer side bar views:
-  - `WPF Toolbox` to drag controls into XAML editors.
+  - `WPF: Toolbox` to drag controls into XAML editors.
 - Use `WPF: Open XAML File` from Command Palette (or right-click a `.csproj` in Explorer) to open linked/non-discoverable XAML files.
 
 ## Status

@@ -155,7 +155,7 @@ export function activate(context: vscode.ExtensionContext): void {
           const result = await vscode.window.withProgress(
             {
               location: vscode.ProgressLocation.Notification,
-              title: `Building ${path.basename(projectPath)}…`,
+              title: `Building ${path.basename(projectPath)} for Designer…`,
               cancellable: true,
             },
             (_progress, token) => buildProject(projectPath, token)

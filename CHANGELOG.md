@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.9.6] - 2026-04-01
+
+- Fixed packaging issue.
+
 ## [0.9.5] - 2026-04-01
 
 - Forced Hot Reload overlay to appear early in live app.

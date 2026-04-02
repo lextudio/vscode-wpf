@@ -45,7 +45,7 @@
     "designer"
   ],
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run build",
     "compile": "tsc -p .",
     "compile:tests": "tsc -p test/tsconfig.json",
     "watch": "tsc -w -p .",
@@ -152,7 +152,7 @@
         {
           "type": "webview",
           "id": "wpf.toolbox",
-          "name": "WPF Toolbox"
+          "name": "Toolbox"
         }
       ]
     },
