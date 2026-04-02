@@ -1,0 +1,118 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>sample</RootNamespace>
+
+    <!--
+      Enable WXSG (WPF XAML Source Generator).
+
+      When true:
+        1. Page / ApplicationDefinition items are passed to the WXSG source generator
+           via AdditionalFiles so it can produce typed InitializeComponent + field decls.
+        2. WPF's own MSBuild-generated .g.cs files are suppressed from final compilation;
+           WXSG output wins instead.
+        3. MarkupCompilePass1 / Pass2 still run → the BAML resource is still embedded,
+           so Application.LoadComponent works at runtime (Phase 1 behaviour).
+    -->
+    <WpfXsgEnabled>true</WpfXsgEnabled>
+
+    <!--
+      XamlSourceGenEnabled=true activates the XSG incremental source generator.
+      The generator reads this via build_property.XamlSourceGenEnabled
+      (see MsBuildConfigurationSource). Without it the generator is a no-op.
+    -->
+    <XamlSourceGenEnabled>true</XamlSourceGenEnabled>
+  </PropertyGroup>
+
+  <!--
+    Reference the WXSG source generator and all its transitive dependencies as analyzers.
+    (In production projects a single NuGet package reference is enough because the .nupkg
+    bundles all DLLs in analyzers/dotnet/cs/ — but for a local project reference MSBuild
+    only adds the direct output DLL, so each dependency must also be added explicitly.)
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\XamlToCSharpGenerator.Generator.WPF\XamlToCSharpGenerator.Generator.WPF.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\XamlToCSharpGenerator.WPF\XamlToCSharpGenerator.WPF.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Compiler\XamlToCSharpGenerator.Compiler.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Core\XamlToCSharpGenerator.Core.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Framework.Abstractions\XamlToCSharpGenerator.Framework.Abstractions.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.MiniLanguageParsing\XamlToCSharpGenerator.MiniLanguageParsing.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!--
+    Make AdditionalFiles metadata visible to Roslyn source generators.
+    This mirrors what XamlToCSharpGenerator.Build.props does for Avalonia.
+  -->
+  <ItemGroup Condition="'$(WpfXsgEnabled)' == 'true'">
+    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="SourceItemGroup" />
+    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="TargetPath" />
+    <!--
+      Make MSBuild properties visible to the Roslyn source generator.
+      XamlSourceGenEnabled is the master on/off switch read by MsBuildConfigurationSource.
+      RootNamespace is used for namespace inference in generated code.
+    -->
+    <CompilerVisibleProperty Include="XamlSourceGenEnabled" />
+    <CompilerVisibleProperty Include="RootNamespace" />
+  </ItemGroup>
+
+  <!--
+    Pass each Page / ApplicationDefinition item to the WXSG generator via AdditionalFiles.
+    SourceItemGroup=Page lets WpfFrameworkBuildContract identify which files to process.
+    TargetPath is the project-relative path used to compute the pack URI for LoadComponent.
+  -->
+  <Target Name="_WxsgExposeXamlToGenerator"
+          BeforeTargets="GenerateMSBuildEditorConfigFileShouldRun"
+          Condition="'$(WpfXsgEnabled)' == 'true' and !$(MSBuildProjectName.Contains('_wpftmp'))">
+    <ItemGroup>
+      <AdditionalFiles Include="@(Page)">
+        <SourceItemGroup>Page</SourceItemGroup>
+        <TargetPath>%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+      </AdditionalFiles>
+      <AdditionalFiles Include="@(ApplicationDefinition)">
+        <SourceItemGroup>ApplicationDefinition</SourceItemGroup>
+        <TargetPath>%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+      </AdditionalFiles>
+    </ItemGroup>
+  </Target>
+
+  <!--
+    Suppress WPF's MSBuild-generated .g.cs files from final compilation so WXSG output wins.
+
+    MarkupCompilePass1 adds the generated files to <Compile> (they live in obj/).
+    MarkupCompilePass2 / GenerateTemporaryTargetAssembly still run before CoreCompile —
+    those use their own temp assembly and are unaffected by this removal.
+
+    The BAML resource is still embedded; Application.LoadComponent works at runtime.
+  -->
+  <Target Name="_WxsgSuppressWpfGeneratedCode"
+          AfterTargets="MarkupCompilePass1"
+          BeforeTargets="CoreCompile"
+          Condition="'$(WpfXsgEnabled)' == 'true'">
+    <ItemGroup>
+      <!--
+        _GeneratedCodeFiles is the output item from MarkupCompilePass1 containing the
+        WPF-generated partial class files (MainWindow.g.cs, App.g.cs, etc.).
+        We remove them here so WXSG's generated code (via context.AddSource) wins.
+        The .g.cs files have absolute paths, so a glob Remove on IntermediateOutputPath
+        would not match — referencing the item directly is more reliable.
+      -->
+      <Compile Remove="@(_GeneratedCodeFiles)" />
+    </ItemGroup>
+  </Target>
+</Project>

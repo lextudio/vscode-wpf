@@ -85,6 +85,13 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
         // IComponentConnector.Connect — no-op; field wiring is done via FindName above.
         EmitConnect(sb, memberIndent);
 
+        // ApplicationDefinition items need a [STAThread] Main entry point.
+        if (IsApplicationDefinition(viewModel))
+        {
+            sb.AppendLine();
+            EmitMain(sb, memberIndent, doc);
+        }
+
         sb.AppendLine($"{indent}}}");
 
         if (hasNs)
@@ -133,6 +140,27 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
         sb.AppendLine($"{indent}{{");
         sb.AppendLine($"{indent}    // Field wiring is performed via FindName inside InitializeComponent.");
         sb.AppendLine($"{indent}    _contentLoaded = true;");
+        sb.AppendLine($"{indent}}}");
+    }
+
+    /// <summary>
+    /// Returns true when the XAML file is an <c>ApplicationDefinition</c> item —
+    /// i.e., its root element resolves to <c>System.Windows.Application</c>.
+    /// WPF's generated <c>App.g.cs</c> includes a <c>[STAThread] Main()</c> entry point
+    /// that we must replicate when suppressing the WPF-generated file.
+    /// </summary>
+    private static bool IsApplicationDefinition(ResolvedViewModel viewModel) =>
+        viewModel.RootObject.TypeName == "System.Windows.Application";
+
+    private static void EmitMain(StringBuilder sb, string indent, XamlDocumentModel doc)
+    {
+        sb.AppendLine($"{indent}[global::System.STAThreadAttribute()]");
+        sb.AppendLine($"{indent}[global::System.Diagnostics.DebuggerNonUserCode]");
+        sb.AppendLine($"{indent}public static void Main()");
+        sb.AppendLine($"{indent}{{");
+        sb.AppendLine($"{indent}    var app = new global::{doc.ClassFullName}();");
+        sb.AppendLine($"{indent}    app.InitializeComponent();");
+        sb.AppendLine($"{indent}    app.Run();");
         sb.AppendLine($"{indent}}}");
     }
 

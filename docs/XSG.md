@@ -148,10 +148,11 @@ alongside `XamlToCSharpGenerator.Build`) will:
 | `WpfFrameworkProfile` | ✅ Implemented |
 | `WpfFrameworkBuildContract` | ✅ Implemented |
 | `WpfSemanticBinder` (named-element type resolution) | ✅ Phase 1 |
-| `WpfCodeEmitter` (LoadComponent-based) | ✅ Phase 1 |
+| `WpfCodeEmitter` (LoadComponent-based + `Main()` for `ApplicationDefinition`) | ✅ Phase 1 |
 | `WpfXamlSourceGenerator` in Generator project | ✅ Implemented |
 | Language server uses `XamlToCSharpGenerator.WPF` | ✅ Refactored |
-| MSBuild `XamlToCSharpGenerator.Build.WPF` targets | 🚧 TODO |
+| `sample/net6.0-csharp-expressions` demo builds with WXSG Phase 1 | ✅ Working |
+| MSBuild `XamlToCSharpGenerator.Build.WPF` targets (NuGet package) | 🚧 TODO |
 | Full semantic binding (Phase 2) | 🚧 TODO |
 | Pure C# emission (Phase 3) | 🚧 TODO |
 | Hot reload (Phase 4) | 🚧 TODO |
