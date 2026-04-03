@@ -34,6 +34,12 @@ foreach ($tfm in @('netcoreapp3.0', 'net462')) {
 	if ($LASTEXITCODE -ne 0) { throw "Failed to build WpfHotReload.Runtime for $tfm" }
 }
 
+Write-Host 'Building SharpDbg debugger...'
+$sharpDbgProj = Join-Path $here 'external\SharpDbg\src\SharpDbg.Cli\SharpDbg.Cli.csproj'
+$sharpDbgOut = Join-Path $here 'tools\SharpDbg'
+dotnet publish $sharpDbgProj -c Release --output $sharpDbgOut --no-self-contained
+if ($LASTEXITCODE -ne 0) { throw 'Failed to build SharpDbg' }
+
 $pkg = Get-Content package.json -Raw | ConvertFrom-Json
 $createdVsix = @()
 

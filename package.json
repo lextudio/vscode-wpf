@@ -78,6 +78,14 @@
         }
       },
       {
+        "command": "wpf.hotReloadDebug",
+        "title": "WPF: Hot Reload (Debug with SharpDbg)",
+        "icon": {
+          "light": "images/hot-reload.svg",
+          "dark": "images/hot-reload.svg"
+        }
+      },
+      {
         "command": "wpf.rebuildRestartDesigner",
         "title": "WPF: Rebuild and Restart Designer"
       },
@@ -106,6 +114,44 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "debuggers": [
+      {
+        "type": "wpf-sharpdbg",
+        "label": "WPF (SharpDbg)",
+        "program": "./tools/SharpDbg/SharpDbg.Cli.exe",
+        "args": ["--interpreter=vscode"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the WPF application executable."
+              },
+              "args": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Command line arguments."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory."
+              },
+              "env": {
+                "type": "object",
+                "description": "Environment variables.",
+                "additionalProperties": { "type": "string" }
+              },
+              "stopAtEntry": {
+                "type": "boolean",
+                "description": "Break at program entry point.",
+                "default": false
+              }
+            }
+          }
+        }
+      }
+    ],
     "menus": {
       "editor/title": [
         {
@@ -129,6 +175,9 @@
       "commandPalette": [
         {
           "command": "wpf.hotReload"
+        },
+        {
+          "command": "wpf.hotReloadDebug"
         },
         {
           "command": "wpf.launchDesigner"

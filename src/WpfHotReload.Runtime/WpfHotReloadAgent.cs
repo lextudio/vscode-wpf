@@ -39,6 +39,16 @@ public static class WpfHotReloadAgent
     private static readonly bool _startHiddenRequested = ReadBooleanEnvironmentVariable("WPF_HOTRELOAD_START_HIDDEN");
     private static readonly string? LogPath = Environment.GetEnvironmentVariable("WPF_HOTRELOAD_LOG");
 
+    // ── Source Map ──────────────────────────────────────────────────────
+    // Maps (normalized file path, line, column) → WeakReference to the live object.
+    // Built via VisualDiagnostics.GetXamlSourceInfo when ENABLE_XAML_DIAGNOSTICS_SOURCE_INFO=1.
+    private static readonly Dictionary<SourceAnchor, WeakReference<DependencyObject>> _sourceMap = new();
+    private static readonly object _sourceMapLock = new();
+    private static volatile bool _sourceMapBuilt;
+    private static volatile MethodInfo? _getXamlSourceInfoMethod;
+    private static volatile MethodInfo? _getResourceDictionariesForSourceMethod;
+    private static volatile bool _diagnosticMethodsResolved;
+
     public static string PipeName { get; } =
         Environment.GetEnvironmentVariable("WPF_HOTRELOAD_PIPE")
         ?? $"wpf-hotreload-{Process.GetCurrentProcess().Id}";
@@ -76,6 +86,225 @@ public static class WpfHotReloadAgent
         catch
         {
             // Never let diagnostics break the host app.
+        }
+    }
+
+    // ── Source Map Types and Methods ──────────────────────────────────────
+
+    private readonly struct SourceAnchor : IEquatable<SourceAnchor>
+    {
+        public string NormalizedUri { get; }
+        public int Line { get; }
+        public int Column { get; }
+
+        public SourceAnchor(string normalizedUri, int line, int column)
+        {
+            NormalizedUri = normalizedUri;
+            Line = line;
+            Column = column;
+        }
+
+        public bool Equals(SourceAnchor other) =>
+            Line == other.Line && Column == other.Column &&
+            string.Equals(NormalizedUri, other.NormalizedUri, StringComparison.Ordinal);
+
+        public override bool Equals(object? obj) => obj is SourceAnchor other && Equals(other);
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                var hash = NormalizedUri?.GetHashCode() ?? 0;
+                hash = (hash * 397) ^ Line;
+                hash = (hash * 397) ^ Column;
+                return hash;
+            }
+        }
+    }
+
+    private static void ResolveDiagnosticMethods()
+    {
+        if (_diagnosticMethodsResolved)
+        {
+            return;
+        }
+
+        _diagnosticMethodsResolved = true;
+        try
+        {
+            // VisualDiagnostics.GetXamlSourceInfo is in PresentationCore.
+            var vdType = typeof(System.Windows.Media.Visual).Assembly
+                .GetType("System.Windows.Diagnostics.VisualDiagnostics");
+            if (vdType is not null)
+            {
+                _getXamlSourceInfoMethod = vdType.GetMethod(
+                    "GetXamlSourceInfo",
+                    BindingFlags.Public | BindingFlags.Static,
+                    binder: null,
+                    types: new[] { typeof(object) },
+                    modifiers: null);
+                Log($"Resolved VisualDiagnostics.GetXamlSourceInfo: {_getXamlSourceInfoMethod is not null}");
+            }
+
+            // ResourceDictionaryDiagnostics.GetResourceDictionariesForSource is in PresentationFramework.
+            var rddType = typeof(Application).Assembly
+                .GetType("System.Windows.Diagnostics.ResourceDictionaryDiagnostics");
+            if (rddType is not null)
+            {
+                _getResourceDictionariesForSourceMethod = rddType.GetMethod(
+                    "GetResourceDictionariesForSource",
+                    BindingFlags.Public | BindingFlags.Static,
+                    binder: null,
+                    types: new[] { typeof(Uri) },
+                    modifiers: null);
+                Log($"Resolved ResourceDictionaryDiagnostics.GetResourceDictionariesForSource: {_getResourceDictionariesForSourceMethod is not null}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Failed to resolve diagnostic methods: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Builds a source map from live objects to their XAML source locations.
+    /// Requires ENABLE_XAML_DIAGNOSTICS_SOURCE_INFO=1 to be set before app start.
+    /// </summary>
+    private static void BuildSourceMap()
+    {
+        ResolveDiagnosticMethods();
+        if (_getXamlSourceInfoMethod is null)
+        {
+            Log("Source map: GetXamlSourceInfo not available, skipping.");
+            return;
+        }
+
+        lock (_sourceMapLock)
+        {
+            _sourceMap.Clear();
+            var count = 0;
+
+            foreach (var candidate in EnumerateLiveCandidates())
+            {
+                if (candidate is not DependencyObject depObj)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var sourceInfo = _getXamlSourceInfoMethod.Invoke(null, new object[] { depObj });
+                    if (sourceInfo is null)
+                    {
+                        continue;
+                    }
+
+                    // XamlSourceInfo has SourceUri (Uri), LineNumber (int), LinePosition (int).
+                    var sourceInfoType = sourceInfo.GetType();
+                    var sourceUri = sourceInfoType.GetProperty("SourceUri")?.GetValue(sourceInfo) as Uri;
+                    var lineNumber = (int)(sourceInfoType.GetProperty("LineNumber")?.GetValue(sourceInfo) ?? 0);
+                    var linePosition = (int)(sourceInfoType.GetProperty("LinePosition")?.GetValue(sourceInfo) ?? 0);
+
+                    if (sourceUri is null || lineNumber == 0)
+                    {
+                        continue;
+                    }
+
+                    var normalizedUri = NormalizeSourceUri(sourceUri);
+                    var anchor = new SourceAnchor(normalizedUri, lineNumber, linePosition);
+                    _sourceMap[anchor] = new WeakReference<DependencyObject>(depObj);
+                    count++;
+                }
+                catch
+                {
+                    // Skip objects that fail source info lookup.
+                }
+            }
+
+            _sourceMapBuilt = true;
+            Log($"Source map built: {count} entries.");
+        }
+    }
+
+    private static string NormalizeSourceUri(Uri uri)
+    {
+        // pack://application:,,,/... URIs need normalization to file paths.
+        // For file:// URIs, just return the local path.
+        if (uri.IsFile)
+        {
+            return uri.LocalPath.Replace('/', '\\').ToLowerInvariant();
+        }
+
+        // pack:// URIs — extract the component path.
+        return uri.ToString().ToLowerInvariant();
+    }
+
+    private static DependencyObject? FindBySourceAnchor(string filePath, int line, int column)
+    {
+        var normalizedPath = filePath.Replace('/', '\\').ToLowerInvariant();
+        var anchor = new SourceAnchor(normalizedPath, line, column);
+
+        lock (_sourceMapLock)
+        {
+            if (_sourceMap.TryGetValue(anchor, out var weakRef) &&
+                weakRef.TryGetTarget(out var target))
+            {
+                return target;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Find all live ResourceDictionary instances loaded from the given source URI.
+    /// Uses ResourceDictionaryDiagnostics.GetResourceDictionariesForSource when available.
+    /// </summary>
+    private static IEnumerable<ResourceDictionary> FindResourceDictionariesForSource(string filePath)
+    {
+        ResolveDiagnosticMethods();
+        if (_getResourceDictionariesForSourceMethod is null)
+        {
+            yield break;
+        }
+
+        Uri sourceUri;
+        try
+        {
+            sourceUri = new Uri(filePath, UriKind.Absolute);
+        }
+        catch
+        {
+            yield break;
+        }
+
+        object? result;
+        try
+        {
+            result = _getResourceDictionariesForSourceMethod.Invoke(null, new object[] { sourceUri });
+        }
+        catch (Exception ex)
+        {
+            Log($"ResourceDictionaryDiagnostics.GetResourceDictionariesForSource failed: {ex.Message}");
+            yield break;
+        }
+
+        if (result is IEnumerable enumerable)
+        {
+            foreach (var item in enumerable)
+            {
+                if (item is null)
+                {
+                    continue;
+                }
+
+                // Each item is a ResourceDictionaryInfo — extract the ResourceDictionary property.
+                var dictProp = item.GetType().GetProperty("ResourceDictionary");
+                if (dictProp?.GetValue(item) is ResourceDictionary dict)
+                {
+                    yield return dict;
+                }
+            }
         }
     }
 
@@ -379,7 +608,7 @@ public static class WpfHotReloadAgent
                         {
                             Log("Dispatching to UI thread...");
                             app.Dispatcher.Invoke(() => UpdateOverlayStatus(OverlayState.Applying, "Applying\u2026"));
-                            result = app.Dispatcher.Invoke(() => ApplyXamlTextCore(request.FilePath, request.XamlText));
+                            result = app.Dispatcher.Invoke(() => ApplyXamlTextCore(request));
                             Log($"Dispatch result: {result}");
                             if (result.StartsWith("ok", StringComparison.Ordinal))
                             {
@@ -423,9 +652,22 @@ public static class WpfHotReloadAgent
         public string? Action { get; set; }
         public string? FilePath { get; set; }
         public string? XamlText { get; set; }
+        public string? PreviousXamlText { get; set; }
+        public string? ChangeKind { get; set; }
+        public List<PropertyChangeInfo>? PropertyChanges { get; set; }
         public string? Query { get; set; }
         public string? XNorm { get; set; }
         public string? YNorm { get; set; }
+    }
+
+    private sealed class PropertyChangeInfo
+    {
+        public string ElementName { get; set; } = string.Empty;
+        public string ElementType { get; set; } = string.Empty;
+        public string Property { get; set; } = string.Empty;
+        public string NewValue { get; set; } = string.Empty;
+        public int Line { get; set; }
+        public int Column { get; set; }
     }
 
     private sealed class PipeResponse
@@ -727,7 +969,8 @@ public static class WpfHotReloadAgent
                 return "error: no current WPF application";
             }
 
-            return app.Dispatcher.Invoke(() => ApplyXamlTextCore(filePath, xamlText));
+            var request = new PipeRequest { FilePath = filePath, XamlText = xamlText };
+            return app.Dispatcher.Invoke(() => ApplyXamlTextCore(request));
         }
         catch (Exception ex)
         {
@@ -735,24 +978,79 @@ public static class WpfHotReloadAgent
         }
     }
 
-    private static string ApplyXamlTextCore(string filePath, string xamlText)
+    private static string ApplyXamlTextCore(PipeRequest request)
     {
+        var filePath = request.FilePath!;
+        var xamlText = request.XamlText!;
+        var changeKind = request.ChangeKind;
+
+        // Ensure source map is built on first apply.
+        if (!_sourceMapBuilt)
+        {
+            BuildSourceMap();
+        }
+
         var xClass = TryExtractXClass(xamlText);
         var sanitizedXaml = StripCompileOnlyAttributes(xamlText);
 
+        // ── Level 0: Property Patch ─────────────────────────────────────
+        // When the extension classifies the change as property-only and sends
+        // individual property changes, try targeted patching first.
+        if (string.Equals(changeKind, "property", StringComparison.Ordinal) &&
+            request.PropertyChanges is { Count: > 0 })
+        {
+            Log($"Attempting Level 0 property patch ({request.PropertyChanges.Count} changes)");
+            var patchResult = TryApplyPropertyPatch(filePath, request.PropertyChanges);
+            if (patchResult is not null)
+            {
+                return patchResult;
+            }
+
+            Log("Level 0 property patch did not fully apply, escalating.");
+        }
+
+        // ── Level 2: Resource Dictionary Reload ─────────────────────────
+        if (string.Equals(changeKind, "resource", StringComparison.Ordinal))
+        {
+            Log("Attempting Level 2 resource dictionary reload");
+            var resourceResult = TryApplyResourceDictionaryReload(filePath, sanitizedXaml);
+            if (resourceResult is not null)
+            {
+                return resourceResult;
+            }
+
+            Log("Level 2 resource reload did not apply, escalating to full file reload.");
+        }
+
+        // ── Level 4: Restart Required ───────────────────────────────────
+        if (string.Equals(changeKind, "restart", StringComparison.Ordinal))
+        {
+            return "error: restart required — x:Class changed or unsupported structural edit";
+        }
+
+        // ── WXSG Hot Reload ─────────────────────────────────────────────
+        string? wxsgFailureMessage = null;
         if (TryApplyWxsgHotReload(filePath, xamlText, xClass, out var wxsgHotReloadResult))
         {
-            return wxsgHotReloadResult;
+            if (wxsgHotReloadResult.StartsWith("ok:", StringComparison.OrdinalIgnoreCase))
+            {
+                return wxsgHotReloadResult;
+            }
+
+            wxsgFailureMessage = wxsgHotReloadResult;
+            Log($"WXSG hot reload fallback engaged: {wxsgFailureMessage}");
         }
 
-        // Fast/safe path first: apply named element property updates directly from XML.
-        // This avoids object graph reconstruction and prevents debugger-breaking first-chance
-        // exceptions for simple edits (e.g. colors/text/margins).
-        if (TryApplyNamedElementPropertyUpdates(sanitizedXaml, out var xmlFallbackMessage))
+        // ── XML Fallback (named element property updates) ───────────────
+        var xmlFallbackApplied = false;
+        string? xmlFallbackMessage = null;
+        if (TryApplyNamedElementPropertyUpdates(sanitizedXaml, out var xmlMessage))
         {
-            return $"ok: {xmlFallbackMessage}";
+            xmlFallbackApplied = true;
+            xmlFallbackMessage = xmlMessage;
         }
 
+        // ── Level 1/3: Subtree or Full File Reload ──────────────────────
         object parsedRoot;
         try
         {
@@ -761,18 +1059,171 @@ public static class WpfHotReloadAgent
         catch (Exception ex)
         {
             var innerMessage = ex.InnerException?.Message;
-            return innerMessage is null
+            var parseError = innerMessage is null
                 ? $"error: parse failed ({ex.GetType().Name}): {ex.Message}"
                 : $"error: parse failed ({ex.GetType().Name}): {ex.Message} | inner: {innerMessage}";
+            if (xmlFallbackApplied && xmlFallbackMessage is not null)
+            {
+                return $"ok: {xmlFallbackMessage} | full apply skipped: {parseError}";
+            }
+
+            return wxsgFailureMessage is null
+                ? parseError
+                : $"{parseError} | prior wxsg failure: {wxsgFailureMessage}";
         }
 
         var liveRoot = FindLiveRoot(filePath, xClass, parsedRoot);
         if (liveRoot is null)
         {
-            return $"error: no live root matched {xClass ?? filePath}";
+            var noRootError = $"error: no live root matched {xClass ?? filePath}";
+            if (xmlFallbackApplied && xmlFallbackMessage is not null)
+            {
+                return $"ok: {xmlFallbackMessage} | full apply skipped: {noRootError}";
+            }
+
+            return wxsgFailureMessage is null
+                ? noRootError
+                : $"{noRootError} | prior wxsg failure: {wxsgFailureMessage}";
         }
 
-        return ApplyParsedRoot(liveRoot, parsedRoot);
+        var applyResult = ApplyParsedRoot(liveRoot, parsedRoot);
+
+        // Rebuild source map after full tree replacement since positions may have shifted.
+        BuildSourceMap();
+
+        if (applyResult.StartsWith("error:", StringComparison.OrdinalIgnoreCase))
+        {
+            if (xmlFallbackApplied && xmlFallbackMessage is not null)
+            {
+                return $"ok: {xmlFallbackMessage} | full apply failed: {applyResult}";
+            }
+
+            if (wxsgFailureMessage is not null)
+            {
+                return $"{applyResult} | prior wxsg failure: {wxsgFailureMessage}";
+            }
+        }
+
+        return applyResult;
+    }
+
+    // ── Level 0: Property Patch ─────────────────────────────────────────
+
+    /// <summary>
+    /// Applies individual property changes to live elements found via source map or x:Name.
+    /// Returns an "ok:..." result if all changes applied, or null to escalate.
+    /// </summary>
+    private static string? TryApplyPropertyPatch(string filePath, List<PropertyChangeInfo> changes)
+    {
+        var applied = 0;
+        var failed = 0;
+
+        foreach (var change in changes)
+        {
+            object? target = null;
+
+            // Try source map first (most precise).
+            if (change.Line > 0)
+            {
+                target = FindBySourceAnchor(filePath, change.Line, change.Column);
+            }
+
+            // Fall back to x:Name lookup.
+            if (target is null && !string.IsNullOrWhiteSpace(change.ElementName))
+            {
+                target = FindNamedElement(Application.Current?.MainWindow, change.ElementName);
+            }
+
+            if (target is null)
+            {
+                Log($"Property patch: could not find target for {change.ElementType}.{change.Property} (name={change.ElementName}, line={change.Line})");
+                failed++;
+                continue;
+            }
+
+            if (TryApplyPropertyValue(target, change.Property, change.NewValue))
+            {
+                applied++;
+                Log($"Property patch: {change.ElementName}.{change.Property} = {change.NewValue}");
+            }
+            else
+            {
+                Log($"Property patch: failed to set {change.ElementName}.{change.Property} = {change.NewValue}");
+                failed++;
+            }
+        }
+
+        if (failed > 0)
+        {
+            // Some properties failed — escalate to subtree/full reload.
+            return null;
+        }
+
+        if (applied > 0)
+        {
+            return $"ok: property patch applied {applied} change(s)";
+        }
+
+        return null;
+    }
+
+    // ── Level 2: Resource Dictionary Reload ─────────────────────────────
+
+    /// <summary>
+    /// Reloads all live ResourceDictionary instances loaded from the given file.
+    /// Uses ResourceDictionaryDiagnostics when available, falls back to app resources walk.
+    /// Returns an "ok:..." result if reload succeeded, or null to escalate.
+    /// </summary>
+    private static string? TryApplyResourceDictionaryReload(string filePath, string sanitizedXaml)
+    {
+        ResourceDictionary parsedDict;
+        try
+        {
+            var parsed = ParseXamlIgnoringEventMembers(sanitizedXaml);
+            if (parsed is not ResourceDictionary dict)
+            {
+                return null;
+            }
+
+            parsedDict = dict;
+        }
+        catch (Exception ex)
+        {
+            Log($"Resource reload parse failed: {ex.Message}");
+            return null;
+        }
+
+        // Try diagnostic API first for targeted reload.
+        var diagnosticDicts = FindResourceDictionariesForSource(filePath).ToList();
+        if (diagnosticDicts.Count > 0)
+        {
+            var reloaded = 0;
+            foreach (var liveDict in diagnosticDicts)
+            {
+                ApplyResourceDictionary(liveDict, parsedDict);
+                reloaded++;
+            }
+
+            Log($"Resource reload via diagnostics: {reloaded} dictionary instance(s) updated");
+            return $"ok: resource dictionary reloaded ({reloaded} instance(s) via diagnostics)";
+        }
+
+        // Fall back: walk app resources looking for a matching source URI.
+        var app = Application.Current;
+        if (app is null)
+        {
+            return null;
+        }
+
+        // Try applying as the application-level resource dictionary.
+        if (app.Resources.Source is not null &&
+            app.Resources.Source.LocalPath.Equals(filePath, StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyResourceDictionary(app.Resources, parsedDict);
+            return "ok: application resource dictionary reloaded";
+        }
+
+        return null;
     }
 
     private static bool TryApplyWxsgHotReload(string filePath, string xamlText, string? xClass, out string result)
@@ -859,9 +1310,25 @@ public static class WpfHotReloadAgent
             return null;
         }
 
+        const string existsPrefix = "element.exists:";
+        if (query.StartsWith(existsPrefix, StringComparison.Ordinal))
+        {
+            var elementName = query.Substring(existsPrefix.Length);
+            if (string.IsNullOrWhiteSpace(elementName))
+            {
+                return "0";
+            }
+
+            return FindNamedElement(Application.Current?.MainWindow, elementName) is null ? "0" : "1";
+        }
+
         return query switch
         {
             "agent.ready" => "1",
+            "sourceMap.built" => _sourceMapBuilt ? "1" : "0",
+            "sourceMap.count" => _sourceMap.Count.ToString(),
+            "diagnostics.sourceInfo" => (_getXamlSourceInfoMethod is not null) ? "1" : "0",
+            "diagnostics.resourceDict" => (_getResourceDictionariesForSourceMethod is not null) ? "1" : "0",
             "PrimaryButton.Background" => DescribeBrushColor(FindNamedElement(Application.Current?.MainWindow, "PrimaryButton") as Control),
             "PaneTitle.Text" => (FindNamedElement(Application.Current?.MainWindow, "PaneTitle") as TextBlock)?.Text,
             "PaneBody.Text" => (FindNamedElement(Application.Current?.MainWindow, "PaneBody") as TextBlock)?.Text,
@@ -976,9 +1443,13 @@ public static class WpfHotReloadAgent
                     case "action": request.Action = value; break;
                     case "filePath": request.FilePath = value; break;
                     case "xamlText": request.XamlText = value; break;
+                    case "previousXamlText": request.PreviousXamlText = value; break;
+                    case "changeKind": request.ChangeKind = value; break;
                     case "query": request.Query = value; break;
                     case "xNorm": request.XNorm = value; break;
                     case "yNorm": request.YNorm = value; break;
+                    // propertyChanges is an array — skip in the simple Framework parser.
+                    // The agent will fall through to XML fallback or full reload.
                 }
             }
             return request;
@@ -2522,13 +2993,52 @@ public static class WpfHotReloadAgent
 
     private static object ParseXamlIgnoringEventMembers(string xamlText)
     {
+        var appAssembly = GetApplicationAssembly();
+        Exception? lastUnknownTypeError = null;
+
+        try
+        {
+            // Default schema context knows core WPF types such as Window/Grid/TextBlock.
+            return ParseXamlIgnoringEventMembersCore(xamlText, schemaContext: null, localAssembly: appAssembly);
+        }
+        catch (Exception ex) when (IsUnknownTypeParseFailure(ex))
+        {
+            lastUnknownTypeError = ex;
+        }
+
+        try
+        {
+            // Retry with an augmented schema context to resolve custom app types.
+            return ParseXamlIgnoringEventMembersCore(
+                xamlText,
+                GetXamlSchemaContext(appAssembly),
+                localAssembly: appAssembly);
+        }
+        catch (Exception ex) when (IsUnknownTypeParseFailure(ex) && lastUnknownTypeError is not null)
+        {
+            throw new InvalidOperationException(
+                $"XAML unknown-type parse failures: default={lastUnknownTypeError.Message}; augmented={ex.Message}",
+                ex);
+        }
+    }
+
+    private static object ParseXamlIgnoringEventMembersCore(
+        string xamlText,
+        XamlSchemaContext? schemaContext,
+        Assembly? localAssembly)
+    {
         using var textReader = new StringReader(xamlText);
         using var xmlReader = XmlReader.Create(textReader, new XmlReaderSettings
         {
             DtdProcessing = DtdProcessing.Prohibit,
         });
-
-        using var xamlReader = new XamlXmlReader(xmlReader);
+        var readerSettings = new XamlXmlReaderSettings
+        {
+            LocalAssembly = localAssembly
+        };
+        using var xamlReader = schemaContext is null
+            ? new XamlXmlReader(xmlReader, readerSettings)
+            : new XamlXmlReader(xmlReader, schemaContext, readerSettings);
         var objectWriter = new XamlObjectWriter(xamlReader.SchemaContext);
 
         while (xamlReader.Read())
@@ -2545,6 +3055,60 @@ public static class WpfHotReloadAgent
 
         return objectWriter.Result
             ?? throw new InvalidOperationException("XAML parse produced no root object.");
+    }
+
+    private static bool IsUnknownTypeParseFailure(Exception ex)
+    {
+        if (ex is XamlObjectWriterException writerException &&
+            writerException.Message.IndexOf("unknown type", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return true;
+        }
+
+        return ex.InnerException is not null && IsUnknownTypeParseFailure(ex.InnerException);
+    }
+
+    private static Assembly? GetApplicationAssembly()
+    {
+        try
+        {
+            var app = Application.Current;
+            if (app?.MainWindow != null)
+            {
+                return app.MainWindow.GetType().Assembly;
+            }
+
+            // Try to find any loaded assembly that contains custom types
+            foreach (var candidate in EnumerateLiveCandidates().Take(1))
+            {
+                return candidate.GetType().Assembly;
+            }
+        }
+        catch
+        {
+            // Fallback to default behavior
+        }
+
+        return null;
+    }
+
+    private static XamlSchemaContext GetXamlSchemaContext(Assembly? appAssembly)
+    {
+        // Include both core WPF assemblies and the app assembly so custom controls
+        // can resolve without losing framework types such as Window.
+        var assemblies = new[]
+        {
+            typeof(Window).Assembly,
+            typeof(Application).Assembly,
+            typeof(FrameworkElement).Assembly,
+            typeof(MarkupExtension).Assembly,
+            appAssembly
+        }
+        .Where(assembly => assembly is not null)
+        .Distinct()
+        .Cast<Assembly>()
+        .ToArray();
+        return new XamlSchemaContext(assemblies);
     }
 
     private static bool TryApplyNamedElementPropertyUpdates(string xamlText, out string message)

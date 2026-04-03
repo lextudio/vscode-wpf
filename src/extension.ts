@@ -34,9 +34,10 @@ import {
   getRuntimeSessionInfo,
   hasRunningRuntimeSession,
   pushRuntimeXamlUpdate,
+  pushRuntimeXamlUpdateDetailed,
   registerRuntimeHotReload,
+  startRuntimeHotReloadSessionWithDebugger,
   showRuntimeHotReloadOutput,
-  startRuntimeHotReloadSession,
 } from './runtimeHotReload';
 import { registerToolbox } from './toolbox';
 import { startReviewPromptScheduler } from './reviewPrompt';
@@ -393,14 +394,87 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       showRuntimeHotReloadOutput();
-      const started = await startRuntimeHotReloadSession(context, projectPath, xamlPath);
+      const started = await startRuntimeHotReloadSessionWithDebugger(context, projectPath, xamlPath);
       if (!started) {
         return;
       }
 
       vscode.window.showInformationMessage(
-        `Started WPF hot reload session for ${path.basename(projectPath)}. Once the app finishes loading, click Hot Reload again to push the current XAML file.`
+        `Started WPF hot reload + debug session for ${path.basename(projectPath)}. Once the app finishes loading, click Hot Reload again to push the current XAML file.`
       );
+    })
+  );
+
+  // ── Hot Reload with SharpDbg debugger ──────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf.hotReloadDebug', async (uri?: vscode.Uri) => {
+      const resource = uri ?? vscode.window.activeTextEditor?.document?.uri;
+      if (!resource) {
+        vscode.window.showWarningMessage('No XAML file is currently open.');
+        return;
+      }
+
+      const xamlPath = resource.fsPath;
+      if (!isWpfXaml(xamlPath)) {
+        vscode.window.showErrorMessage('The active file is not recognized as WPF XAML.');
+        return;
+      }
+
+      await startLanguageServer(context);
+
+      const projectPath = await resolveProjectForAction(resource);
+      if (!projectPath) {
+        return;
+      }
+
+      if (!isWpfProject(projectPath)) {
+        vscode.window.showErrorMessage(
+          `"${path.basename(projectPath)}" is not a WPF project.`
+        );
+        return;
+      }
+
+      if (hasRunningRuntimeSession(projectPath)) {
+        showRuntimeHotReloadOutput();
+        const xamlDocument = await vscode.workspace.openTextDocument(resource);
+        const pushed = await pushRuntimeXamlUpdate(projectPath, xamlPath, xamlDocument.getText());
+        if (pushed) {
+          vscode.window.showInformationMessage(
+            `Applied hot reload update for ${path.basename(xamlPath)}.`
+          );
+        } else {
+          vscode.window.showWarningMessage(
+            'WPF hot reload did not apply. See the "WPF Hot Reload" output channel for details.'
+          );
+        }
+        return;
+      }
+
+      showRuntimeHotReloadOutput();
+      const started = await startRuntimeHotReloadSessionWithDebugger(context, projectPath, xamlPath);
+      if (!started) {
+        return;
+      }
+
+      vscode.window.showInformationMessage(
+        `Started WPF hot reload + debug session for ${path.basename(projectPath)}. ` +
+        'Set breakpoints and click Hot Reload to push XAML updates.'
+      );
+    })
+  );
+
+  // ── SharpDbg Debug Adapter Provider ───────────────────────────────────
+  context.subscriptions.push(
+    vscode.debug.registerDebugAdapterDescriptorFactory('wpf-sharpdbg', {
+      createDebugAdapterDescriptor(_session: vscode.DebugSession) {
+        const sharpDbgPath = resolveSharpDbgExecutable(context);
+        if (!sharpDbgPath) {
+          throw new Error(
+            'SharpDbg debugger not found. Build it with the "Build SharpDbg" task first.'
+          );
+        }
+        return new vscode.DebugAdapterExecutable(sharpDbgPath, ['--interpreter=vscode']);
+      },
     })
   );
 
@@ -558,6 +632,18 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!projectPath || !xamlPath || !xamlText) { return false; }
       return pushRuntimeXamlUpdate(projectPath, xamlPath, xamlText);
     })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'wpf._test.pushRuntimeXamlUpdateDetailed',
+      async (projectPath?: string, xamlPath?: string, xamlText?: string) => {
+        if (!projectPath || !xamlPath || !xamlText) {
+          return { success: false, message: 'missing arguments', degraded: false };
+        }
+
+        return pushRuntimeXamlUpdateDetailed(projectPath, xamlPath, xamlText);
+      })
   );
 
 
@@ -1233,5 +1319,23 @@ async function recommendXamlStyler(context: vscode.ExtensionContext): Promise<vo
   } catch (e) {
     console.error(`Failed recommending XAML Styler: ${e}`);
   }
+}
+
+function resolveSharpDbgExecutable(context: vscode.ExtensionContext): string | null {
+  const extPath = context.extensionPath;
+
+  // Standardized location: tools/SharpDbg/ (used by both dev builds and .vsix).
+  const toolsPath = path.join(extPath, 'tools', 'SharpDbg', 'SharpDbg.Cli.exe');
+  if (fs.existsSync(toolsPath)) {
+    return toolsPath;
+  }
+
+  // Dev fallback: artifacts output from the submodule build.
+  const artifactPath = path.join(extPath, 'external', 'SharpDbg', 'artifacts', 'bin', 'SharpDbg.Cli', 'debug', 'SharpDbg.Cli.exe');
+  if (fs.existsSync(artifactPath)) {
+    return artifactPath;
+  }
+
+  return null;
 }
 
