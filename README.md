@@ -13,6 +13,8 @@ development experience for WPF with open source components
 - Runtime startup-hook based XAML Hot Reload
 - VS Code toolbox drag/drop for XAML controls
 
+**This extension is independent and unaffiliated with Microsoft.**
+
 ![Visual designer screenshot](https://www.lextudio.com/images/wpf-designer.png)
 
 > [Watch our Hot Reload demo video](https://www.lextudio.com/videos/wpf-hot-reload.mp4)
