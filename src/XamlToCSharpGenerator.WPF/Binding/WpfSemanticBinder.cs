@@ -859,6 +859,14 @@ public sealed class WpfSemanticBinder : IXamlSemanticBinder
             return (csharpExpression, ResolvedValueKind.MarkupExtension);
         }
 
+        // Detect {Binding ...} — keep the raw XAML string as ValueExpression so the emitter
+        // can parse it and emit a SetBinding call.
+        if (MarkupParser.TryParseMarkupExtension(rawValue, out var markupInfo) &&
+            string.Equals(markupInfo.Name, "Binding", StringComparison.OrdinalIgnoreCase))
+        {
+            return (rawValue, ResolvedValueKind.Binding);
+        }
+
         return (AsStringLiteral(rawValue), ResolvedValueKind.Literal);
     }
 

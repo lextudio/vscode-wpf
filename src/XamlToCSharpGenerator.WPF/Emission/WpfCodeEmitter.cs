@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using XamlToCSharpGenerator.Core.Abstractions;
 using XamlToCSharpGenerator.Core.Models;
+using XamlToCSharpGenerator.Core.Parsing;
 
 namespace XamlToCSharpGenerator.WPF.Emission;
 
@@ -17,6 +18,7 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
     private const string GeneratorVersion = "0.3.0";
     private const string GeneratorName = "XamlToCSharpGenerator.Generator.WPF";
     private const string WpfFrameworkId = "WPF";
+    private static readonly MarkupExpressionParser MarkupParser = new();
 
     public (string HintName, string Source) Emit(ResolvedViewModel viewModel)
     {
@@ -430,6 +432,13 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
                 if (string.Equals(assignment.PropertyName, "StartupUri", StringComparison.Ordinal))
                     continue;
 
+                // {Binding ...} — emit a SetBinding call instead of a direct property assignment.
+                if (assignment.ValueKind == ResolvedValueKind.Binding)
+                {
+                    EmitSetBinding(assignment, instanceVariable);
+                    continue;
+                }
+
                 var convertedValue = ConvertLiteralExpression(assignment.ValueExpression, assignment.ClrPropertyTypeName);
                 var frameworkOwner = assignment.GetFrameworkPropertyOwnerTypeName(WpfFrameworkId);
                 if (!string.IsNullOrWhiteSpace(frameworkOwner))
@@ -445,6 +454,44 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
                     MemberIndent + "    " +
                     instanceVariable + "." + assignment.PropertyName + " = " + convertedValue + ";");
             }
+        }
+
+        private void EmitSetBinding(ResolvedPropertyAssignment assignment, string instanceVariable)
+        {
+            // Re-parse the raw XAML binding expression stored in ValueExpression.
+            if (!MarkupParser.TryParseMarkupExtension(assignment.ValueExpression, out var info))
+                return;
+
+            // Path: first positional arg OR named "Path" arg.
+            string? path = null;
+            if (info.PositionalArguments.Length > 0)
+                path = info.PositionalArguments[0];
+            else
+                info.NamedArguments.TryGetValue("Path", out path);
+
+            var pathLiteral = string.IsNullOrEmpty(path)
+                ? string.Empty
+                : "\"" + path!.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+
+            // Build the Binding object-initializer for optional named arguments.
+            var initParts = new List<string>();
+            if (info.NamedArguments.TryGetValue("Mode", out var mode))
+                initParts.Add("Mode = global::System.Windows.Data.BindingMode." + mode);
+            if (info.NamedArguments.TryGetValue("UpdateSourceTrigger", out var ust))
+                initParts.Add("UpdateSourceTrigger = global::System.Windows.Data.UpdateSourceTrigger." + ust);
+
+            var bindingExpr = "new global::System.Windows.Data.Binding(" + pathLiteral + ")";
+            if (initParts.Count > 0)
+                bindingExpr += " { " + string.Join(", ", initParts) + " }";
+
+            // DependencyProperty field: WPF convention is OwnerType.PropertyNameProperty.
+            // For attached properties the framework owner type is stored in FrameworkPayload.
+            var ownerTypeName = assignment.GetFrameworkPropertyOwnerTypeName(WpfFrameworkId)
+                                ?? assignment.ClrPropertyOwnerTypeName;
+            var dpField = QualifyType(ownerTypeName) + "." + assignment.PropertyName + "Property";
+
+            Builder.AppendLine(MemberIndent + "    " + instanceVariable +
+                               ".SetBinding(" + dpField + ", " + bindingExpr + ");");
         }
 
         public void EmitHotReloadCollectionCleanup(ResolvedObjectNode rootNode)

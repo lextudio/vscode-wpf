@@ -11,19 +11,4 @@
 
   </PropertyGroup>
 
-  <!--
-    Make MSBuild properties and per-file item metadata visible to Roslyn source generators
-    via the generated .editorconfig file.
-  -->
-  <ItemGroup Condition="'$(WpfXsgEnabled)' == 'true'">
-    <!-- Per-file metadata: generator reads SourceItemGroup (Page/ApplicationDefinition)
-         and TargetPath (for pack URI computation) from each AdditionalFiles entry. -->
-    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="SourceItemGroup" />
-    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="TargetPath" />
-
-    <!-- Global properties the generator reads at file-independent level. -->
-    <CompilerVisibleProperty Include="XamlSourceGenEnabled" />
-    <CompilerVisibleProperty Include="RootNamespace" />
-    <CompilerVisibleProperty Include="AvaloniaSourceGenGlobalXmlnsPrefixes" />
-  </ItemGroup>
 </Project>

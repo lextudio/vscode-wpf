@@ -1,86 +1,129 @@
 <!--
-  WXSG sample:
-  - Simpler XAML: no explicit xmlns declarations at file head.
-  - C# expressions: `{cs: ...}` values are emitted as direct C# in WXSG output.
+  WXSG — C# Expressions Demo
+  ===========================
+  Every value below is computed by a {cs: ...} expression compiled directly
+  into InitializeComponent(). No IValueConverter. No code-behind. No reflection.
+
+  What {cs: ...} replaces in each case is noted inline.
 -->
 <Window x:Class="sample.MainWindow"
-        Title="{cs: string.Concat(&quot;WXSG — &quot;, &quot;C# Expressions + Simpler XAML&quot;)}"
-        Width="{cs: 520}"
-        Height="{cs: 420}">
+        Title="WXSG C# Expressions"
+        Width="500"
+        Height="520"
+        Background="White">
 
-  <Window.Resources>
-    <local:GreetingViewModel x:Key="Vm" />
-  </Window.Resources>
+  <StackPanel Margin="24">
 
-  <Grid DataContext="{StaticResource Vm}" Margin="20">
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="*" />
-      <RowDefinition Height="Auto" />
-    </Grid.RowDefinitions>
+    <!-- Title: string interpolation instead of code-behind setter -->
+    <TextBlock FontSize="20" FontWeight="Bold" Margin="0,0,0,4"
+               Text="{cs: $&quot;Running on {(IntPtr.Size == 8 ? &quot;64-bit&quot; : &quot;32-bit&quot;)} .NET&quot;}" />
 
-    <!-- Greeting header — Phase 5: Text="{cs: $"Hello, {vm.FullName}!"}" -->
-    <TextBlock x:Name="GreetingLabel"
-               Grid.Row="0"
-               FontSize="22"
-               FontWeight="SemiBold"
-               Margin="0,0,0,16"
-               Text="{Binding Greeting}" />
+    <!-- Subtitle: replaces a code-behind line in constructor -->
+    <TextBlock Foreground="Gray" FontSize="12" Margin="0,0,0,20"
+               Text="{cs: System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}" />
 
-    <!-- Name editor -->
-    <Grid Grid.Row="1" Margin="0,0,0,8">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="80" />
-        <ColumnDefinition Width="*" />
-        <ColumnDefinition Width="80" />
-        <ColumnDefinition Width="*" />
-      </Grid.ColumnDefinitions>
+    <!-- ── Section 1: String expressions ─────────────────────────────────── -->
+    <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,0,0,8"
+               Text="String expressions" />
 
-      <Label Grid.Column="0" Content="First:" VerticalAlignment="Center" />
-      <TextBox x:Name="FirstNameBox"
-               Grid.Column="1"
-               Margin="4,0"
-               Text="{Binding FirstName, UpdateSourceTrigger=PropertyChanged}" />
+    <Border Background="#F8F8F8" CornerRadius="6" Padding="14,10" Margin="0,0,0,16">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="150" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="28" />
+          <RowDefinition Height="28" />
+          <RowDefinition Height="28" />
+        </Grid.RowDefinitions>
 
-      <Label Grid.Column="2" Content="Last:" VerticalAlignment="Center" />
-      <TextBox x:Name="LastNameBox"
-               Grid.Column="3"
-               Margin="4,0"
-               Text="{Binding LastName, UpdateSourceTrigger=PropertyChanged}" />
-    </Grid>
+        <TextBlock Grid.Row="0" Grid.Column="0" Foreground="#666" VerticalAlignment="Center"
+                   Text="User" />
+        <!-- replaces: tb.Text = Environment.UserName; in constructor -->
+        <TextBlock Grid.Row="0" Grid.Column="1" FontFamily="Consolas" VerticalAlignment="Center"
+                   Text="{cs: Environment.UserName}" />
 
-    <!-- Full name read-back — Phase 5: Text="{cs: vm.FirstName + " " + vm.LastName}" -->
-    <TextBlock x:Name="FullNameLabel"
-               Grid.Row="2"
-               Margin="0,0,0,12"
-               Foreground="Gray"
-               Text="{cs: string.Concat(&quot;Computed label: &quot;, &quot;full name below&quot;)}" />
+        <TextBlock Grid.Row="1" Grid.Column="0" Foreground="#666" VerticalAlignment="Center"
+                   Text="Machine" />
+        <!-- replaces: tb.Text = Environment.MachineName; -->
+        <TextBlock Grid.Row="1" Grid.Column="1" FontFamily="Consolas" VerticalAlignment="Center"
+                   Text="{cs: Environment.MachineName}" />
 
-    <!-- Items list -->
-    <ListBox x:Name="ItemsList"
-             Grid.Row="3"
-             Margin="0,0,0,8"
-             ItemsSource="{Binding Items}" />
+        <TextBlock Grid.Row="2" Grid.Column="0" Foreground="#666" VerticalAlignment="Center"
+                   Text="CPU Cores" />
+        <!-- replaces: tb.Text = $"{Environment.ProcessorCount} logical"; in constructor -->
+        <TextBlock Grid.Row="2" Grid.Column="1" FontFamily="Consolas" VerticalAlignment="Center"
+                   Text="{cs: $&quot;{Environment.ProcessorCount} logical&quot;}" />
+      </Grid>
+    </Border>
 
-    <!-- Add item row -->
-    <Grid Grid.Row="4">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="*" />
-        <ColumnDefinition Width="Auto" />
-      </Grid.ColumnDefinitions>
+    <!-- ── Section 2: Conditional expressions ────────────────────────────── -->
+    <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,0,0,8"
+               Text="Conditional expressions — replaces BoolToStringConverter" />
 
-      <TextBox x:Name="NewItemBox"
-               Grid.Column="0"
-               Margin="0,0,8,0"
-               Text="{Binding NewItem, UpdateSourceTrigger=PropertyChanged}" />
+    <Border Background="#F8F8F8" CornerRadius="6" Padding="14,10" Margin="0,0,0,16">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="150" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="28" />
+          <RowDefinition Height="28" />
+        </Grid.RowDefinitions>
 
-      <Button x:Name="AddButton"
-              Grid.Column="1"
-              Padding="12,4"
-              Content="{cs: string.Concat(&quot;Add&quot;, &quot; Item&quot;)}"
-              Click="AddButton_Click" />
-    </Grid>
-  </Grid>
+        <TextBlock Grid.Row="0" Grid.Column="0" Foreground="#666" VerticalAlignment="Center"
+                   Text="Elevated" />
+        <!-- replaces: new BoolToStringConverter("Yes","No") -->
+        <TextBlock Grid.Row="0" Grid.Column="1" FontFamily="Consolas" VerticalAlignment="Center"
+                   Foreground="{cs: System.Security.Principal.WindowsIdentity.GetCurrent().Owner?.IsWellKnown(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid) == true ? System.Windows.Media.Brushes.DarkRed : System.Windows.Media.Brushes.DarkGreen}"
+                   Text="{cs: System.Security.Principal.WindowsIdentity.GetCurrent().Owner?.IsWellKnown(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid) == true ? &quot;Yes — Admin&quot; : &quot;No — Standard&quot;}" />
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Foreground="#666" VerticalAlignment="Center"
+                   Text="Interactive" />
+        <!-- replaces: bool → string in code-behind -->
+        <TextBlock Grid.Row="1" Grid.Column="1" FontFamily="Consolas" VerticalAlignment="Center"
+                   Text="{cs: Environment.UserInteractive ? &quot;Yes&quot; : &quot;No&quot;}" />
+      </Grid>
+    </Border>
+
+    <!-- ── Section 3: Math expressions ──────────────────────────────────── -->
+    <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,0,0,8"
+               Text="Math expressions — replaces static resource + converter" />
+
+    <Border Background="#F8F8F8" CornerRadius="6" Padding="14,10" Margin="0,0,0,16">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="150" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="28" />
+          <RowDefinition Height="28" />
+          <RowDefinition Height="28" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Foreground="#666" VerticalAlignment="Center"
+                   Text="π" />
+        <TextBlock Grid.Row="0" Grid.Column="1" FontFamily="Consolas" VerticalAlignment="Center"
+                   Text="{cs: Math.PI.ToString(&quot;F10&quot;)}" />
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Foreground="#666" VerticalAlignment="Center"
+                   Text="e" />
+        <TextBlock Grid.Row="1" Grid.Column="1" FontFamily="Consolas" VerticalAlignment="Center"
+                   Text="{cs: Math.E.ToString(&quot;F10&quot;)}" />
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Foreground="#666" VerticalAlignment="Center"
+                   Text="φ (golden)" />
+        <TextBlock Grid.Row="2" Grid.Column="1" FontFamily="Consolas" VerticalAlignment="Center"
+                   Text="{cs: ((1.0 + Math.Sqrt(5.0)) / 2.0).ToString(&quot;F10&quot;)}" />
+      </Grid>
+    </Border>
+
+    <!-- Footer: timestamp computed at build/init time -->
+    <TextBlock FontSize="10" Foreground="#AAAAAA" TextAlignment="Right"
+               Text="{cs: $&quot;Initialized {DateTime.Now:HH:mm:ss} — zero IValueConverter, zero reflection&quot;}" />
+
+  </StackPanel>
 </Window>
