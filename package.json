@@ -178,6 +178,11 @@
           "command": "wpf.openXamlFile",
           "when": "resourceExtname == .csproj",
           "group": "navigation"
+        },
+        {
+          "command": "wpf.openXamlFile",
+          "when": "resourceExtname == .vbproj",
+          "group": "navigation"
         }
       ],
       "commandPalette": [

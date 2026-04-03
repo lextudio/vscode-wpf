@@ -15,6 +15,8 @@ export interface LaunchTargetInfo {
   cwd: string;
 }
 
+const PROJECT_EXTENSIONS = ['.csproj', '.vbproj'] as const;
+
 export function isCSharpDevKitInstalled(): boolean {
   return vscode.extensions.getExtension('ms-dotnettools.csdevkit') !== undefined;
 }
@@ -50,7 +52,7 @@ export function isWpfXaml(xamlPath: string): boolean {
 }
 
 /**
- * Returns true if the .csproj is a WPF project.
+ * Returns true if the project file is a WPF project.
  * SDK-style projects must have <UseWPF>true</UseWPF>.
  * Legacy projects are recognised by WPF type GUIDs or PresentationFramework references.
  * Projects referencing Avalonia, Uno, or WinAppSDK are rejected.
@@ -81,7 +83,7 @@ export function isWpfProject(projectPath: string): boolean {
 
 /**
  * Walk up from the directory containing the XAML file to the workspace root
- * looking for a WPF .csproj file. Returns the first one found, or null.
+ * looking for a WPF project file (.csproj/.vbproj). Returns the first one found, or null.
  */
 export async function findProjectForFile(xamlFilePath: string): Promise<string | null> {
   const owningProject = await findOwningWorkspaceProjectForFile(xamlFilePath);
@@ -97,9 +99,12 @@ export async function findProjectForFile(xamlFilePath: string): Promise<string |
   while (true) {
     try {
       const entries = fs.readdirSync(dir);
-      const csproj = entries.find((e: string) => e.endsWith('.csproj'));
-      if (csproj) {
-        const projectPath = path.join(dir, csproj);
+      for (const entry of entries) {
+        if (!isSupportedProjectFile(entry)) {
+          continue;
+        }
+
+        const projectPath = path.join(dir, entry);
         if (isWpfProject(projectPath)) {
           return projectPath;
         }
@@ -157,11 +162,25 @@ function projectExplicitlyIncludesFile(projectPath: string, normalizedFilePath: 
 }
 
 /**
- * Find all WPF .csproj files across workspace folders (up to 50).
+ * Find all WPF project files (.csproj/.vbproj) across workspace folders (up to 50).
  */
 export async function findProjectsInWorkspace(): Promise<string[]> {
-  const uris = await vscode.workspace.findFiles('**/*.csproj', '**/node_modules/**', 50);
-  return uris.map(u => u.fsPath).filter(isWpfProject);
+  const [csprojUris, vbprojUris] = await Promise.all([
+    vscode.workspace.findFiles('**/*.csproj', '**/node_modules/**', 50),
+    vscode.workspace.findFiles('**/*.vbproj', '**/node_modules/**', 50),
+  ]);
+
+  const seen = new Set<string>();
+  const allPaths = [...csprojUris, ...vbprojUris].map(u => u.fsPath).filter(projectPath => {
+    const normalized = normalizeFsPath(projectPath);
+    if (seen.has(normalized)) {
+      return false;
+    }
+    seen.add(normalized);
+    return true;
+  });
+
+  return allPaths.filter(isWpfProject);
 }
 
 /**
@@ -173,11 +192,11 @@ export async function findSolutionsInWorkspace(): Promise<string[]> {
 }
 
 /**
- * Parse a .csproj to derive TargetFramework and the expected output directory.
+ * Parse a project file to derive TargetFramework and the expected output directory.
  */
 export function parseProject(projectPath: string): { projectName: string; targetFramework: string; outputPath: string } {
   const projectDir = path.dirname(projectPath);
-  const projectName = path.basename(projectPath, '.csproj');
+  const projectName = path.basename(projectPath, path.extname(projectPath));
 
   let targetFramework = 'net10.0-windows';
   let outputPathOverride: string | null = null;
@@ -263,7 +282,7 @@ export function areProjectOutputsUpToDate(projectPath: string): boolean {
   const projectDir = path.dirname(projectPath);
   const pending: string[] = [projectDir];
   const ignoredDirs = new Set(['bin', 'obj', '.git', 'node_modules', '.vs']);
-  const watchedExtensions = new Set(['.cs', '.xaml', '.csproj', '.props', '.targets', '.resx']);
+  const watchedExtensions = new Set(['.cs', '.vb', '.xaml', '.csproj', '.vbproj', '.props', '.targets', '.resx']);
 
   while (pending.length > 0) {
     const currentDir = pending.pop();
@@ -354,7 +373,7 @@ export function getLaunchTarget(projectPath: string, dotnetPath = 'dotnet'): Lau
 export async function showProjectPicker(projects: string[]): Promise<string | undefined> {
   if (projects.length === 0) {
     vscode.window.showWarningMessage(
-      'No .csproj files found in the workspace. Open a folder containing a WPF project.'
+      'No WPF project files (.csproj/.vbproj) found in the workspace. Open a folder containing a WPF project.'
     );
     return undefined;
   }
@@ -389,4 +408,9 @@ function xmlValue(xml: string, tag: string): string | null {
 function normalizeFsPath(filePath: string): string {
   const normalized = path.normalize(filePath);
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function isSupportedProjectFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return PROJECT_EXTENSIONS.some(ext => lower.endsWith(ext));
 }

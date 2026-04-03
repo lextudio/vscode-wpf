@@ -48,6 +48,8 @@ const designerLaunchOperations = new Set<string>();
 const hotReloadTimers = new Map<string, NodeJS.Timeout>();
 let eventHandlerLogChannel: vscode.OutputChannel | undefined;
 
+type CodeBehindLanguage = 'csharp' | 'vb';
+
 function getEventHandlerLog(): vscode.OutputChannel {
   if (!eventHandlerLogChannel) {
     eventHandlerLogChannel = vscode.window.createOutputChannel('WPF Event Handler');
@@ -78,14 +80,15 @@ export function activate(context: vscode.ExtensionContext): void {
       `Request received. xaml='${msg.xamlPath}', event='${msg.eventName}', handler='${msg.handlerName}'`
     );
 
-    const codeBehindPath = msg.xamlPath.replace(/\.xaml$/i, '.xaml.cs');
-    if (!fs.existsSync(codeBehindPath)) {
-      logEventHandler(`Code-behind file not found: ${codeBehindPath}`);
+    const codeBehindPath = resolveCodeBehindPath(msg.xamlPath);
+    if (!codeBehindPath) {
+      logEventHandler(`Code-behind file not found for: ${msg.xamlPath}`);
       vscode.window.showErrorMessage(
-        `Code-behind file not found: ${path.basename(codeBehindPath)}`
+        `Code-behind file not found for: ${path.basename(msg.xamlPath)}`
       );
       return;
     }
+    const codeBehindLanguage = getCodeBehindLanguage(codeBehindPath);
 
     await startLanguageServer(context);
     logEventHandler('Language server start/ensure requested.');
@@ -94,6 +97,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await tryInsertEventHandlerViaLanguageServer(msg.xamlPath, msg.eventName, msg.handlerName);
     const position = lsPosition ?? await tryInsertEventHandlerFallback(
       codeBehindPath,
+      codeBehindLanguage,
       msg.handlerName,
       msg.eventArgType
     );
@@ -496,7 +500,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('wpf.openXamlFile', async (uri?: vscode.Uri) => {
       const explicitProjectPath =
-        uri?.scheme === 'file' && uri.fsPath.toLowerCase().endsWith('.csproj')
+        uri?.scheme === 'file' && isSupportedProjectPath(uri.fsPath)
           ? uri.fsPath
           : null;
       const activePath = vscode.window.activeTextEditor?.document.uri.scheme === 'file'
@@ -756,7 +760,13 @@ async function tryInsertEventHandlerViaLanguageServer(
     );
   }
 
-  const codeBehindUri = vscode.Uri.file(xamlPath.replace(/\.xaml$/i, '.xaml.cs'));
+  const codeBehindPath = resolveCodeBehindPath(xamlPath);
+  if (!codeBehindPath) {
+    logEventHandler(`No code-behind file found after applying action for ${xamlPath}.`);
+    return null;
+  }
+
+  const codeBehindUri = vscode.Uri.file(codeBehindPath);
   const codeBehindDoc = await vscode.workspace.openTextDocument(codeBehindUri);
   const methodMatch = new RegExp(`\\b${escapeRegExp(handlerName)}\\s*\\(`).exec(codeBehindDoc.getText());
   if (!methodMatch) {
@@ -770,6 +780,7 @@ async function tryInsertEventHandlerViaLanguageServer(
 
 async function tryInsertEventHandlerFallback(
   codeBehindPath: string,
+  codeBehindLanguage: CodeBehindLanguage,
   handlerName: string,
   eventArgTypeFullName: string
 ): Promise<vscode.Position | null> {
@@ -778,29 +789,30 @@ async function tryInsertEventHandlerFallback(
     const doc = await vscode.workspace.openTextDocument(uri);
     const content = doc.getText();
 
-    const existingMethod = new RegExp(`\\bvoid\\s+${escapeRegExp(handlerName)}\\s*\\(`).exec(content);
+    const existingMethod = codeBehindLanguage === 'vb'
+      ? new RegExp(`\\b(?:Sub|Function)\\s+${escapeRegExp(handlerName)}\\s*\\(`, 'i').exec(content)
+      : new RegExp(`\\bvoid\\s+${escapeRegExp(handlerName)}\\s*\\(`).exec(content);
     if (existingMethod) {
       logEventHandler(`Fallback: handler '${handlerName}' already exists.`);
       return doc.positionAt(existingMethod.index);
     }
 
-    const closeBraceOffset = findClassClosingBraceOffset(content);
-    if (closeBraceOffset < 0) {
-      logEventHandler('Fallback: could not find class closing brace.');
+    const insertionOffset = codeBehindLanguage === 'vb'
+      ? findVbClassInsertionOffset(content)
+      : findClassClosingBraceOffset(content);
+    if (insertionOffset < 0) {
+      logEventHandler('Fallback: could not find class insertion point.');
       return null;
     }
 
     const indent = detectIndent(content);
     const memberIndent = indent + indent;
-    const bodyIndent = memberIndent + indent;
     const argType = shortTypeName(eventArgTypeFullName);
-    const stub =
-      `\n${memberIndent}private void ${handlerName}(object sender, ${argType} e)\n` +
-      `${memberIndent}{\n` +
-      `${bodyIndent}\n` +
-      `${memberIndent}}\n`;
+    const stub = codeBehindLanguage === 'vb'
+      ? `\n${memberIndent}Private Sub ${handlerName}(sender As Object, e As ${argType})\n${memberIndent}End Sub\n`
+      : `\n${memberIndent}private void ${handlerName}(object sender, ${argType} e)\n${memberIndent}{\n${memberIndent + indent}\n${memberIndent}}\n`;
 
-    const insertionPosition = doc.positionAt(closeBraceOffset);
+    const insertionPosition = doc.positionAt(insertionOffset);
     const edit = new vscode.WorkspaceEdit();
     edit.insert(uri, insertionPosition, stub);
     const applied = await vscode.workspace.applyEdit(edit);
@@ -1058,6 +1070,40 @@ function findClassClosingBraceOffset(content: string): number {
   }
 
   return -1;
+}
+
+function findVbClassInsertionOffset(content: string): number {
+  const endClassRegex = /^\s*End\s+Class\s*$/gim;
+  let match: RegExpExecArray | null;
+  let lastMatch: RegExpExecArray | null = null;
+  while ((match = endClassRegex.exec(content)) !== null) {
+    lastMatch = match;
+  }
+
+  return lastMatch ? lastMatch.index : -1;
+}
+
+function resolveCodeBehindPath(xamlPath: string): string | null {
+  const csharpPath = xamlPath.replace(/\.xaml$/i, '.xaml.cs');
+  if (fs.existsSync(csharpPath)) {
+    return csharpPath;
+  }
+
+  const vbPath = xamlPath.replace(/\.xaml$/i, '.xaml.vb');
+  if (fs.existsSync(vbPath)) {
+    return vbPath;
+  }
+
+  return null;
+}
+
+function getCodeBehindLanguage(codeBehindPath: string): CodeBehindLanguage {
+  return codeBehindPath.toLowerCase().endsWith('.xaml.vb') ? 'vb' : 'csharp';
+}
+
+function isSupportedProjectPath(projectPath: string): boolean {
+  const lower = projectPath.toLowerCase();
+  return lower.endsWith('.csproj') || lower.endsWith('.vbproj');
 }
 
 export async function deactivate(): Promise<void> {

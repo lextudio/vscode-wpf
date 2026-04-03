@@ -33,7 +33,7 @@ export function updateStatusBar(
   }
 
   if (selectedProject) {
-    const name = path.basename(selectedProject, '.csproj');
+    const name = path.basename(selectedProject, path.extname(selectedProject));
     item.text = `$(tools) WPF: ${name}`;
 
     // Suppress our own indicator when C# Dev Kit is managing project context
