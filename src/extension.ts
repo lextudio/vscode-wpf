@@ -68,6 +68,9 @@ export function activate(context: vscode.ExtensionContext): void {
   registerToolbox(context);
   startReviewPromptScheduler(context);
 
+  // Recommend XAMLStyler extension for XAML formatting
+  recommendXamlStyler(context);
+
   // Handle event handler creation requests from the visual designer.
   setEventHandlerCallback(async msg => {
     logEventHandler(
@@ -1201,5 +1204,34 @@ function collectProjectXamlFiles(projectPath: string): string[] {
   }
 
   return Array.from(collected).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+/**
+ * Recommend XAMLStyler extension for XAML formatting.
+ */
+async function recommendXamlStyler(context: vscode.ExtensionContext): Promise<void> {
+  try {
+    const stylerId = 'dabbinavo.xamlstyler';
+    const suppressKey = 'wpf.suppressXamlStylerRecommendation';
+
+    const isSuppressed = context.globalState.get<boolean>(suppressKey, false);
+    const isInstalled = vscode.extensions.getExtension(stylerId);
+
+    if (!isSuppressed && !isInstalled) {
+      const choice = await vscode.window.showInformationMessage(
+        'For formatting XAML you can optionally install "XAML Styler". Would you like to view it?',
+        'Show Extension',
+        "Don't Show Again"
+      );
+
+      if (choice === 'Show Extension') {
+        await vscode.commands.executeCommand('workbench.extensions.search', stylerId);
+      } else if (choice === "Don't Show Again") {
+        await context.globalState.update(suppressKey, true);
+      }
+    }
+  } catch (e) {
+    console.error(`Failed recommending XAML Styler: ${e}`);
+  }
 }
 

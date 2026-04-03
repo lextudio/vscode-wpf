@@ -23,6 +23,12 @@ development experience for WPF with open source components
 
 ## Getting started
 
+### Recommended Companion Extension
+
+For consistent formatting of your XAML files, we recommend optionally installing the community **XAML Styler** extension (`dabbinavo.xamlstyler`). The first time you use this extension you'll receive a prompt; you can also find it manually in the Extensions view by searching for "XAML Styler". This extension is optional—the WPF features work without it.
+
+### Using the Extension
+
 - Activates on `*.xaml` files.
 - Click the `Hot Reload` or `Launch Designer` actions on the top-right of your XAML editor tab.
 - Use the Explorer side bar views:
