@@ -1,5 +1,10 @@
 # Change Log
 
+## [0.9.8] - 2026-04-03
+
+- Added XAML Styler recommendation.
+- Improved Hot Reload overlay design and position.
+
 ## [0.9.7] - 2026-04-02
 
 - Fixed XAML Hot Reload for .NET Framework.
