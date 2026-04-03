@@ -16,7 +16,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="XamlToCSharpGenerator.Generator.WPF" Version="1.0.0-local.5" PrivateAssets="all" />
+    <PackageReference Include="XamlToCSharpGenerator.Generator.WPF" Version="1.0.0-local.6" PrivateAssets="all" />
   </ItemGroup>
 
 </Project>

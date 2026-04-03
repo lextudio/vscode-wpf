@@ -74,6 +74,13 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
 
         if (IsApplicationDefinition(viewModel))
         {
+            var startupWindowType = ResolveStartupWindowType(viewModel, doc);
+            if (startupWindowType is not null)
+            {
+                sb.AppendLine();
+                EmitOnStartup(emitter, startupWindowType);
+            }
+
             sb.AppendLine();
             EmitMain(emitter, doc);
         }
@@ -194,6 +201,59 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
         sb.AppendLine(i + "    var app = new global::" + doc.ClassFullName + "();");
         sb.AppendLine(i + "    app.InitializeComponent();");
         sb.AppendLine(i + "    app.Run();");
+        sb.AppendLine(i + "}");
+    }
+
+    /// <summary>
+    /// Finds the <c>StartupUri</c> property assignment on the Application root node and
+    /// derives the startup window's fully-qualified type name using the same filename-to-class
+    /// convention WPF itself uses: <c>StartupUri="MainWindow.xaml"</c> →
+    /// <c>{AppNamespace}.MainWindow</c>.
+    ///
+    /// Returns <c>null</c> when <c>StartupUri</c> is not set.
+    /// </summary>
+    private static string? ResolveStartupWindowType(ResolvedViewModel viewModel, XamlDocumentModel doc)
+    {
+        foreach (var assignment in viewModel.RootObject.PropertyAssignments)
+        {
+            if (!string.Equals(assignment.PropertyName, "StartupUri", StringComparison.Ordinal))
+                continue;
+
+            // Value expression is a quoted string like "\"MainWindow.xaml\""
+            if (!TryUnquote(assignment.ValueExpression, out var uriValue))
+                uriValue = assignment.ValueExpression.Trim('"');
+
+            if (string.IsNullOrWhiteSpace(uriValue))
+                return null;
+
+            // Extract the filename without extension from a potentially path-qualified URI:
+            // "MainWindow.xaml"        → "MainWindow"
+            // "Views/MainWindow.xaml"  → "MainWindow"
+            var fileName = System.IO.Path.GetFileNameWithoutExtension(uriValue.Replace('\\', '/'));
+            if (string.IsNullOrWhiteSpace(fileName))
+                return null;
+
+            // Prefix with the Application class's namespace (the conventional location for windows).
+            var ns = doc.ClassNamespace;
+            return string.IsNullOrEmpty(ns) ? fileName : ns + "." + fileName;
+        }
+
+        return null;
+    }
+
+    private static void EmitOnStartup(GraphEmitter emitter, string startupWindowTypeName)
+    {
+        var sb = emitter.Builder;
+        var i = emitter.MemberIndent;
+        var qualifiedType = QualifyType(startupWindowTypeName);
+        sb.AppendLine(i + "/// <summary>WPF StartupUri convention: creates and shows the startup window.</summary>");
+        sb.AppendLine(i + "[global::System.Diagnostics.DebuggerNonUserCode]");
+        sb.AppendLine(i + "protected override void OnStartup(global::System.Windows.StartupEventArgs e)");
+        sb.AppendLine(i + "{");
+        sb.AppendLine(i + "    base.OnStartup(e);");
+        sb.AppendLine(i + "    var __startupWindow = new " + qualifiedType + "();");
+        sb.AppendLine(i + "    this.MainWindow = __startupWindow;");
+        sb.AppendLine(i + "    __startupWindow.Show();");
         sb.AppendLine(i + "}");
     }
 
@@ -364,6 +424,12 @@ public sealed class WpfCodeEmitter : IXamlCodeEmitter
         {
             foreach (var assignment in node.PropertyAssignments)
             {
+                // StartupUri is handled by an OnStartup override (see ResolveStartupWindowType /
+                // EmitOnStartup).  Setting it here would cause Application.DoStartup() to try to
+                // load a BAML resource that doesn't exist in Phase 3.
+                if (string.Equals(assignment.PropertyName, "StartupUri", StringComparison.Ordinal))
+                    continue;
+
                 var convertedValue = ConvertLiteralExpression(assignment.ValueExpression, assignment.ClrPropertyTypeName);
                 var frameworkOwner = assignment.GetFrameworkPropertyOwnerTypeName(WpfFrameworkId);
                 if (!string.IsNullOrWhiteSpace(frameworkOwner))
