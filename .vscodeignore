@@ -5,6 +5,7 @@ docs/**
 .claude/**
 .vscode/**
 .git/**
+.logs/**
 sample/**
 tests/**
 test/**

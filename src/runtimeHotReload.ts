@@ -95,6 +95,7 @@ export async function startRuntimeHotReloadSession(
   const cfg = vscode.workspace.getConfiguration('wpf');
   const dotnetPath = cfg.get<string>('dotnetPath', 'dotnet');
   const autoBuild = getAutoBuildOnDesignerLaunch(cfg);
+  const enableLogging = cfg.get<boolean>('enableRuntimeHotReloadLogging', false);
 
   if (autoBuild && !areProjectOutputsUpToDate(projectPath)) {
     const result = await vscode.window.withProgress(
@@ -126,15 +127,20 @@ export async function startRuntimeHotReloadSession(
 
   const pipeName = `wpf-hotreload-${crypto.randomUUID()}`;
   const env: Record<string, string | undefined> = { ...process.env };
-  const logFilePath = path.join(
-    extensionPath ?? process.cwd(),
-    '.logs',
-    'wpf-hotreload',
-    `${pipeName}.log`
-  );
+  let logFilePath: string | undefined;
+  if (enableLogging) {
+    logFilePath = path.join(
+      extensionPath ?? process.cwd(),
+      '.logs',
+      'wpf-hotreload',
+      `${pipeName}.log`
+    );
+  }
   env['WPF_HOTRELOAD_PIPE'] = pipeName;
   env['WPF_HOTRELOAD_START_HIDDEN'] = '0';
-  env['WPF_HOTRELOAD_LOG'] = logFilePath;
+  if (logFilePath) {
+    env['WPF_HOTRELOAD_LOG'] = logFilePath;
+  }
 
   if (helperAssemblyPath) {
     if (isFramework) {
@@ -156,7 +162,9 @@ export async function startRuntimeHotReloadSession(
     return false;
   }
   channel.appendLine(`[Runtime] Pipe name: ${pipeName}`);
-  channel.appendLine(`[Runtime] Runtime log: ${logFilePath}`);
+  if (logFilePath) {
+    channel.appendLine(`[Runtime] Runtime log: ${logFilePath}`);
+  }
 
   const program = launchTarget.program;
   const args = launchTarget.args;
