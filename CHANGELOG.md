@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.9.9] - 2026-04-03
+
+- Improved Hot Reload mechanism.
+
 ## [0.9.8] - 2026-04-03
 
 - Added XAML Styler recommendation.

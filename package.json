@@ -2,7 +2,7 @@
   "name": "vscode-wpf",
   "displayName": "VS Code Tools for WPF",
   "description": "VS Code extension for WPF (.xaml) files with visual designer integration.",
-  "version": "0.9.8",
+  "version": "0.9.9",
   "publisher": "lextudio",
   "engines": {
     "vscode": "^1.101.0"
@@ -119,10 +119,14 @@
         "type": "wpf-sharpdbg",
         "label": "WPF (SharpDbg)",
         "program": "./tools/SharpDbg/SharpDbg.Cli.exe",
-        "args": ["--interpreter=vscode"],
+        "args": [
+          "--interpreter=vscode"
+        ],
         "configurationAttributes": {
           "launch": {
-            "required": ["program"],
+            "required": [
+              "program"
+            ],
             "properties": {
               "program": {
                 "type": "string",
@@ -130,7 +134,9 @@
               },
               "args": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "description": "Command line arguments."
               },
               "cwd": {
@@ -140,7 +146,9 @@
               "env": {
                 "type": "object",
                 "description": "Environment variables.",
-                "additionalProperties": { "type": "string" }
+                "additionalProperties": {
+                  "type": "string"
+                }
               },
               "stopAtEntry": {
                 "type": "boolean",
