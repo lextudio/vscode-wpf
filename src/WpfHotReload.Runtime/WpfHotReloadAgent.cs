@@ -1875,12 +1875,19 @@ public static class WpfHotReloadAgent
             };
         }
 
+        Log($"Preview host visibility request '{query ?? "(null)"}' for {DescribeWindow(window)}");
+
         if (hide)
         {
             if (window.Visibility == Visibility.Visible)
             {
                 window.Hide();
                 _previewHostHiddenByAgent = true;
+                Log($"Preview host hidden by agent. New state: {DescribeWindow(window)}");
+            }
+            else
+            {
+                Log($"Preview host hide request was a no-op. Current state: {DescribeWindow(window)}");
             }
 
             return new PreviewCaptureResult
@@ -1893,6 +1900,11 @@ public static class WpfHotReloadAgent
         if (_previewHostHiddenByAgent && window.Visibility != Visibility.Visible)
         {
             window.Show();
+            Log($"Preview host shown by agent. New state: {DescribeWindow(window)}");
+        }
+        else
+        {
+            Log($"Preview host show request was a no-op. Current state: {DescribeWindow(window)}");
         }
 
         _previewHostHiddenByAgent = false;
@@ -1956,6 +1968,12 @@ public static class WpfHotReloadAgent
             .FirstOrDefault(window => window.IsLoaded)
             ?? app.MainWindow
             ?? app.Windows.OfType<Window>().FirstOrDefault();
+    }
+
+    private static string DescribeWindow(Window window)
+    {
+        var title = string.IsNullOrWhiteSpace(window.Title) ? "(untitled)" : window.Title;
+        return $"Window(title='{title}', visibility={window.Visibility}, isVisible={window.IsVisible}, windowState={window.WindowState}, isLoaded={window.IsLoaded})";
     }
 
     private static FrameworkElement? ResolvePreviewTarget(
@@ -2335,13 +2353,23 @@ public static class WpfHotReloadAgent
 
     private static void ApplyWindow(Window liveWindow, Window parsedWindow)
     {
-        ApplyFrameworkElement(liveWindow, parsedWindow);
+        var liveVisibilityBefore = liveWindow.Visibility;
+        var parsedVisibility = parsedWindow.Visibility;
+
+        ApplyFrameworkElement(liveWindow, parsedWindow, applyVisibility: false);
         ApplyControl(liveWindow, parsedWindow);
         liveWindow.Title = parsedWindow.Title;
         liveWindow.SizeToContent = parsedWindow.SizeToContent;
         liveWindow.WindowStyle = parsedWindow.WindowStyle;
         liveWindow.ResizeMode = parsedWindow.ResizeMode;
         ApplyContentValue(liveWindow, parsedWindow.Content, content => liveWindow.Content = content);
+
+        if (parsedVisibility != liveVisibilityBefore)
+        {
+            Log($"Window visibility preserved during apply (live={liveVisibilityBefore}, parsed={parsedVisibility}).");
+        }
+
+        Log($"Window apply completed: {DescribeWindow(liveWindow)}");
     }
 
     private static void ApplyContentControl(ContentControl liveControl, ContentControl parsedControl)
@@ -2497,7 +2525,10 @@ public static class WpfHotReloadAgent
         }
     }
 
-    private static void ApplyFrameworkElement(FrameworkElement liveElement, FrameworkElement parsedElement)
+    private static void ApplyFrameworkElement(
+        FrameworkElement liveElement,
+        FrameworkElement parsedElement,
+        bool applyVisibility = true)
     {
         liveElement.Width = parsedElement.Width;
         liveElement.Height = parsedElement.Height;
@@ -2513,7 +2544,10 @@ public static class WpfHotReloadAgent
         liveElement.Resources = parsedElement.Resources;
         liveElement.ToolTip = parsedElement.ToolTip;
         liveElement.Tag = parsedElement.Tag;
-        liveElement.Visibility = parsedElement.Visibility;
+        if (applyVisibility)
+        {
+            liveElement.Visibility = parsedElement.Visibility;
+        }
         liveElement.DataContext = parsedElement.DataContext;
     }
 
