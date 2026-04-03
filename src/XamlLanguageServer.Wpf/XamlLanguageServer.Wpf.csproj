@@ -19,11 +19,11 @@
 
   <ItemGroup>
     <!-- AXSG language service infrastructure (from submodule) -->
-    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.LanguageService\XamlToCSharpGenerator.LanguageService.csproj" />
-    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.LanguageServer\XamlToCSharpGenerator.LanguageServer.csproj" />
-    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Framework.Abstractions\XamlToCSharpGenerator.Framework.Abstractions.csproj" />
-    <ProjectReference Include="..\..\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Core\XamlToCSharpGenerator.Core.csproj" />
-    <ProjectReference Include="..\XamlToCSharpGenerator.WPF\XamlToCSharpGenerator.WPF.csproj" />
+    <ProjectReference Include="..\..\external\wxsg\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.LanguageService\XamlToCSharpGenerator.LanguageService.csproj" />
+    <ProjectReference Include="..\..\external\wxsg\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.LanguageServer\XamlToCSharpGenerator.LanguageServer.csproj" />
+    <ProjectReference Include="..\..\external\wxsg\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Framework.Abstractions\XamlToCSharpGenerator.Framework.Abstractions.csproj" />
+    <ProjectReference Include="..\..\external\wxsg\external\XamlToCSharpGenerator\src\XamlToCSharpGenerator.Core\XamlToCSharpGenerator.Core.csproj" />
+    <ProjectReference Include="..\..\external\wxsg\src\XamlToCSharpGenerator.WPF\XamlToCSharpGenerator.WPF.csproj" />
   </ItemGroup>
 
   <ItemGroup>

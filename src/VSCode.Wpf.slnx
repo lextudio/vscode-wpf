@@ -1,0 +1,13 @@
+<Solution>
+  <Project Path="../external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenerator.Avalonia/XamlToCSharpGenerator.Avalonia.csproj" />
+  <Project Path="../external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenerator.Core/XamlToCSharpGenerator.Core.csproj" />
+  <Project Path="../external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenerator.ExpressionSemantics/XamlToCSharpGenerator.ExpressionSemantics.csproj" />
+  <Project Path="../external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenerator.Framework.Abstractions/XamlToCSharpGenerator.Framework.Abstractions.csproj" />
+  <Project Path="../external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenerator.LanguageServer/XamlToCSharpGenerator.LanguageServer.csproj" />
+  <Project Path="../external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenerator.LanguageService/XamlToCSharpGenerator.LanguageService.csproj" />
+  <Project Path="../external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenerator.MiniLanguageParsing/XamlToCSharpGenerator.MiniLanguageParsing.csproj" />
+  <Project Path="../external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenerator.RemoteProtocol/XamlToCSharpGenerator.RemoteProtocol.csproj" />
+  <Project Path="WpfHotReload.Runtime/WpfHotReload.Runtime.csproj" />
+  <Project Path="XamlLanguageServer.Wpf.Tests/XamlLanguageServer.Wpf.Tests.csproj" />
+  <Project Path="XamlLanguageServer.Wpf/XamlLanguageServer.Wpf.csproj" />
+</Solution>

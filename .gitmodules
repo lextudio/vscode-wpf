@@ -1,9 +1,9 @@
 [submodule "external/WpfDesigner"]
 	path = external/WpfDesigner
 	url = https://github.com/icsharpcode/WpfDesigner
-[submodule "external/XamlToCSharpGenerator"]
-	path = external/XamlToCSharpGenerator
-	url = https://github.com/lextudio/XamlToCSharpGenerator.git
 [submodule "external/SharpDbg"]
 	path = external/SharpDbg
 	url = https://github.com/lextudio/SharpDbg.git
+[submodule "external/wxsg"]
+	path = external/wxsg
+	url = https://github.com/lextudio/wxsg.git
