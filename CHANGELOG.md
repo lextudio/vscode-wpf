@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.9.10] - 2026-04-03
+
+- Added VB.NET and F# support.
+
 ## [0.9.9] - 2026-04-03
 
 - Improved Hot Reload mechanism.
