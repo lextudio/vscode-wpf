@@ -17,7 +17,7 @@ development experience for WPF with open source components
 
 ![Visual designer screenshot](https://www.lextudio.com/images/wpf-designer.png)
 
-> [Watch our Hot Reload demo video](https://www.lextudio.com/videos/wpf-hot-reload.mp4)
+> [Watch our XAML Hot Reload demo video](https://www.lextudio.com/videos/wpf-hot-reload.mp4)
 >
 > Note that to inspect runtime state of your WPF apps, tools like [Snoop](https://github.com/snoopwpf/snoopwpf) can be used. We might explore how to integrate them in this extension in the future.
 
@@ -37,9 +37,10 @@ For consistent formatting of your XAML files, we recommend optionally installing
 
 ## Status
 
-The visual designer for WPF from SharpDevelop is stable.
-
-The language server and XAML Hot Reload for WPF are under development.
+- The visual designer for WPF from SharpDevelop is stable.
+- The language server and XAML Hot Reload for WPF are under active development.
+- XAML Live Preview is investigated and planned for a future release.
+- C# and VB.NET projects are primary focus, while F# project support is limited.
 
 XAML Hot Reload helper and visual designer currently target:
 
