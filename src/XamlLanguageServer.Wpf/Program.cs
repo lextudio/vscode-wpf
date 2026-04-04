@@ -69,7 +69,7 @@ if (workspaceRoot is not null)
     }
     else
     {
-        Console.Error.WriteLine("[WPF-LS] No .csproj found in workspace — prewarm skipped.");
+        Console.Error.WriteLine("[WPF-LS] No supported WPF project file (.csproj/.vbproj/.fsproj) found in workspace — prewarm skipped.");
     }
 }
 

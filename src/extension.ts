@@ -48,7 +48,7 @@ const designerLaunchOperations = new Set<string>();
 const hotReloadTimers = new Map<string, NodeJS.Timeout>();
 let eventHandlerLogChannel: vscode.OutputChannel | undefined;
 
-type CodeBehindLanguage = 'csharp' | 'vb';
+type CodeBehindLanguage = 'csharp' | 'vb' | 'fsharp';
 
 function getEventHandlerLog(): vscode.OutputChannel {
   if (!eventHandlerLogChannel) {
@@ -791,7 +791,9 @@ async function tryInsertEventHandlerFallback(
 
     const existingMethod = codeBehindLanguage === 'vb'
       ? new RegExp(`\\b(?:Sub|Function)\\s+${escapeRegExp(handlerName)}\\s*\\(`, 'i').exec(content)
-      : new RegExp(`\\bvoid\\s+${escapeRegExp(handlerName)}\\s*\\(`).exec(content);
+      : codeBehindLanguage === 'fsharp'
+        ? new RegExp(`\\bmember\\s+(?:this|_)\\.${escapeRegExp(handlerName)}\\s*\\(`).exec(content)
+        : new RegExp(`\\bvoid\\s+${escapeRegExp(handlerName)}\\s*\\(`).exec(content);
     if (existingMethod) {
       logEventHandler(`Fallback: handler '${handlerName}' already exists.`);
       return doc.positionAt(existingMethod.index);
@@ -799,7 +801,9 @@ async function tryInsertEventHandlerFallback(
 
     const insertionOffset = codeBehindLanguage === 'vb'
       ? findVbClassInsertionOffset(content)
-      : findClassClosingBraceOffset(content);
+      : codeBehindLanguage === 'fsharp'
+        ? findFSharpMemberInsertionOffset(content)
+        : findClassClosingBraceOffset(content);
     if (insertionOffset < 0) {
       logEventHandler('Fallback: could not find class insertion point.');
       return null;
@@ -810,7 +814,9 @@ async function tryInsertEventHandlerFallback(
     const argType = shortTypeName(eventArgTypeFullName);
     const stub = codeBehindLanguage === 'vb'
       ? `\n${memberIndent}Private Sub ${handlerName}(sender As Object, e As ${argType})\n${memberIndent}End Sub\n`
-      : `\n${memberIndent}private void ${handlerName}(object sender, ${argType} e)\n${memberIndent}{\n${memberIndent + indent}\n${memberIndent}}\n`;
+      : codeBehindLanguage === 'fsharp'
+        ? `\n${memberIndent}member this.${handlerName}(sender: obj, e: ${argType}) = ()\n`
+        : `\n${memberIndent}private void ${handlerName}(object sender, ${argType} e)\n${memberIndent}{\n${memberIndent + indent}\n${memberIndent}}\n`;
 
     const insertionPosition = doc.positionAt(insertionOffset);
     const edit = new vscode.WorkspaceEdit();
@@ -1083,6 +1089,26 @@ function findVbClassInsertionOffset(content: string): number {
   return lastMatch ? lastMatch.index : -1;
 }
 
+function findFSharpMemberInsertionOffset(content: string): number {
+  // Find the offset after the last `member` definition in the F# type body.
+  // We look for lines starting with optional whitespace followed by `member`.
+  const memberRegex = /^[ \t]+member\b[^\n]*/gm;
+  let lastMatch: RegExpExecArray | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = memberRegex.exec(content)) !== null) {
+    lastMatch = match;
+  }
+
+  if (lastMatch) {
+    // Return the offset right after the matched member line (after its newline).
+    const afterMember = lastMatch.index + lastMatch[0].length;
+    return afterMember;
+  }
+
+  // No member found — fall back to end of file.
+  return content.trimEnd().length;
+}
+
 function resolveCodeBehindPath(xamlPath: string): string | null {
   const csharpPath = xamlPath.replace(/\.xaml$/i, '.xaml.cs');
   if (fs.existsSync(csharpPath)) {
@@ -1094,16 +1120,30 @@ function resolveCodeBehindPath(xamlPath: string): string | null {
     return vbPath;
   }
 
+  const fsharpPath = xamlPath.replace(/\.xaml$/i, '.xaml.fs');
+  if (fs.existsSync(fsharpPath)) {
+    return fsharpPath;
+  }
+
   return null;
 }
 
 function getCodeBehindLanguage(codeBehindPath: string): CodeBehindLanguage {
-  return codeBehindPath.toLowerCase().endsWith('.xaml.vb') ? 'vb' : 'csharp';
+  const lower = codeBehindPath.toLowerCase();
+  if (lower.endsWith('.xaml.vb')) {
+    return 'vb';
+  }
+
+  if (lower.endsWith('.xaml.fs')) {
+    return 'fsharp';
+  }
+
+  return 'csharp';
 }
 
 function isSupportedProjectPath(projectPath: string): boolean {
   const lower = projectPath.toLowerCase();
-  return lower.endsWith('.csproj') || lower.endsWith('.vbproj');
+  return lower.endsWith('.csproj') || lower.endsWith('.vbproj') || lower.endsWith('.fsproj');
 }
 
 export async function deactivate(): Promise<void> {

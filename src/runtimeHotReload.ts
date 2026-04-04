@@ -777,7 +777,7 @@ function isRuntimeHelperUpToDate(projectPath: string, helperDllPath: string): bo
   const helperMtime = fs.statSync(helperDllPath).mtimeMs;
   const helperProjectDir = path.dirname(projectPath);
   const pending: string[] = [helperProjectDir];
-  const watchedExtensions = new Set(['.cs', '.vb', '.csproj', '.vbproj', '.props', '.targets', '.resx']);
+  const watchedExtensions = new Set(['.cs', '.vb', '.fs', '.csproj', '.vbproj', '.fsproj', '.props', '.targets', '.resx']);
 
   while (pending.length > 0) {
     const currentDir = pending.pop();

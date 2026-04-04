@@ -183,6 +183,11 @@
           "command": "wpf.openXamlFile",
           "when": "resourceExtname == .vbproj",
           "group": "navigation"
+        },
+        {
+          "command": "wpf.openXamlFile",
+          "when": "resourceExtname == .fsproj",
+          "group": "navigation"
         }
       ],
       "commandPalette": [

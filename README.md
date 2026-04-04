@@ -33,7 +33,7 @@ For consistent formatting of your XAML files, we recommend optionally installing
 - Click the `Hot Reload` or `Launch Designer` actions on the top-right of your XAML editor tab.
 - Use the Explorer side bar views:
   - `WPF: Toolbox` to drag controls into XAML editors.
-- Use `WPF: Open XAML File` from Command Palette (or right-click a `.csproj`/`.vbproj` in Explorer) to open linked/non-discoverable XAML files.
+- Use `WPF: Open XAML File` from Command Palette (or right-click a `.csproj`/`.vbproj`/`.fsproj` in Explorer) to open linked/non-discoverable XAML files.
 
 ## Status
 
