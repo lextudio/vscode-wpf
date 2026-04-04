@@ -64,6 +64,67 @@ the expression pipeline currently assumes C# semantics/codegen in the generator 
 Scope of impact:
 regular XAML IntelliSense, designer, and hot reload still work; only C# expression markup is excluded for VB.
 
+## XSG Gap Check (VB.NET)
+
+I tried enabling WXSG on `sample/net6.0-vb.net` directly:
+
+```xml
+<WpfXsgEnabled>true</WpfXsgEnabled>
+<WpfXsgTargetLanguage>VisualBasic</WpfXsgTargetLanguage>
+<PackageReference Include="XamlToCSharpGenerator.Generator.WPF" Version="0.1.2-5" PrivateAssets="all" />
+```
+
+### Observed failure before fix
+
+`vbc : error BC30420: 'Sub Main' was not found in 'sample'.`
+
+Root cause:
+the WXSG build target removed WPF `ApplicationDefinition` for all languages, but WXSG currently emits only C# source. On VB projects this disabled default WPF startup generation without a VB replacement path.
+
+### Toolset improvement implemented
+
+`XamlToCSharpGenerator.Build.WPF.targets` is now language-aware:
+
+1. WXSG transform path runs only when `$(Language) == 'C#'`.
+2. VB projects with `WpfXsgEnabled=true` fall back to standard WPF markup compiler (safe build behavior).
+3. Build prints a clear high-importance message explaining the fallback.
+4. AdditionalFiles classification now uses real `@(Page)` / `@(ApplicationDefinition)` item groups instead of hard-coded `App.xaml` filename checks.
+5. Added `WpfXsgTargetLanguage` property (`CSharp` / `VisualBasic`) as explicit user intent.
+6. Added a VB.NET generator pipeline:
+   - `WpfXamlVisualBasicSourceGenerator` (Roslyn VB generator entry)
+   - `WpfVisualBasicCodeEmitter` (VB source emission)
+   - package now ships analyzer payloads for both `analyzers/dotnet/cs` and `analyzers/dotnet/vb`.
+
+### Result after fix
+
+VB sample builds successfully with WXSG package in VB mode.
+`AXSG0002` (missing `x:Class`) for template-style VB XAML and false-positive `AXSG0109` warnings are resolved.
+
+## Current VB Emitter Status
+
+WXSG can now run in VB mode:
+
+```xml
+<WpfXsgEnabled>true</WpfXsgEnabled>
+<WpfXsgTargetLanguage>VisualBasic</WpfXsgTargetLanguage>
+```
+
+What works:
+
+1. VB project builds successfully with WXSG package + VB target language.
+2. Markup compiler-generated `.g.vb` compile items are suppressed in WXSG VB mode to avoid duplicate symbols.
+3. VB generator emits source with BAML-backed `InitializeComponent` and app `Main()` entrypoint.
+4. Template-style unqualified `x:Class` values are handled via inferred class mapping in VB mode.
+5. Non-C# projects skip C#-only partial-class validation, avoiding false AXSG0109 warnings.
+
+### Build verification tip
+
+If you are iterating on local package changes, force clean restore:
+
+```powershell
+dotnet restore sample/net6.0-vb.net/sample.vbproj --no-cache
+```
+
 ## New VB Sample Path
 
 `sample/net6.0-vb.net/`

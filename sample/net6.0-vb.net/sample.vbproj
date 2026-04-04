@@ -1,11 +1,18 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net6.0-windows</TargetFramework>
     <RootNamespace>sample</RootNamespace>
     <UseWPF>true</UseWPF>
+    <WpfXsgEnabled>true</WpfXsgEnabled>
+    <WpfXsgTargetLanguage>VisualBasic</WpfXsgTargetLanguage>
+    <RestoreSources>$(MSBuildProjectDirectory)\..\..\artifacts\local-packages;$(RestoreSources)</RestoreSources>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="XamlToCSharpGenerator.Generator.WPF" Version="0.1.2-5" PrivateAssets="all" />
+  </ItemGroup>
 
   <ItemGroup>
     <Import Include="System.Windows" />
