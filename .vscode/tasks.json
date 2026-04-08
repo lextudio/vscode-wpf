@@ -41,7 +41,7 @@
     {
       "label": "Build Designer Tools",
       "type": "shell",
-      "command": "powershell",
+      "command": "pwsh",
       "args": [
         "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-File", "${workspaceFolder}/scripts/build-designer.ps1"
@@ -111,21 +111,21 @@
     {
       "label": "Build Dev Prereqs (fast)",
       "dependsOn": ["Build SharpDbg", "Build Language Server", "npm: build"],
-      "dependsOrder": "sequence",
+      "dependsOrder": "parallel",
       "group": "build",
       "problemMatcher": []
     },
     {
       "label": "Build Dev Prereqs (watch)",
       "dependsOn": ["Build SharpDbg", "Build Language Server", "npm: watch:build"],
-      "dependsOrder": "sequence",
+      "dependsOrder": "parallel",
       "group": "build",
       "problemMatcher": []
     },
     {
       "label": "Build All",
       "dependsOn": ["Build Designer Tools", "Build SharpDbg", "Build Language Server", "npm: build"],
-      "dependsOrder": "sequence",
+      "dependsOrder": "parallel",
       "group": "build",
       "problemMatcher": []
     }

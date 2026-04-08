@@ -10,9 +10,6 @@
   "extensionDependencies": [
     "ms-dotnettools.vscode-dotnet-runtime"
   ],
-  "os": [
-    "win32"
-  ],
   "activationEvents": [
     "onView:wpf.toolbox",
     "onLanguage:xaml",
@@ -294,7 +291,7 @@
     "@types/node": "^25.5.0",
     "@types/vscode": "^1.76.0",
     "@vscode/test-electron": "^2.5.2",
-    "esbuild": "^0.18.11",
+    "esbuild": "^0.28.0",
     "typescript": "^6.0.2"
   },
   "dependencies": {
