@@ -57,6 +57,15 @@ var tieredProvider = new TieredCompilationProvider(
 
 using var engine = new XamlLanguageServiceEngine(tieredProvider, WpfFrameworkProfile.Instance);
 
+// Wire prewarm completion → invalidate stale Tier-1 analysis caches.
+// Documents that were open during Tier-1 have cached analysis keyed on (uri, generation, version).
+// Incrementing their generations forces re-analysis using the full Tier-2 compilation on the
+// next completion/hover/diagnostic request, so users don't see stale Tier-1 results.
+tieredProvider.OnPrewarmCompleted = () =>
+{
+    engine.InvalidateAllOpenDocumentCaches();
+};
+
 // Kick off the full MSBuild compilation load immediately so the upgrade from
 // Tier 1 → Tier 2 happens as early as possible.
 if (workspaceRoot is not null)

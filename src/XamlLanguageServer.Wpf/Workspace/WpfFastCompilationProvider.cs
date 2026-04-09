@@ -167,7 +167,8 @@ internal static class WpfFastCompilationProvider
         foreach (var clrNs in namespaces)
         {
             lines.Add(
-                $"[assembly: System.Windows.Markup.XmlnsDefinition(\"{WpfPresentationXmlNamespace}\", \"{clrNs}\")]");
+                $"[assembly: System.Windows.Markup.XmlnsDefinition(\"{WpfPresentationXmlNamespace}\", \"{clrNs}\")]"
+            );
         }
 
         lines.Add("internal static class __WpfTier1XmlnsMapAnchor { }");
@@ -214,21 +215,66 @@ internal static class WpfFastCompilationProvider
             }
         }
 
+        // ── Step 1: derive the dotnet install root from the running runtime ──────
         // Runtime directory example:
+        //   /usr/local/share/dotnet/shared/Microsoft.NETCore.App/10.0.5/
         //   C:\Program Files\dotnet\shared\Microsoft.NETCore.App\10.0.5\
         var coreRuntimeDir =
             System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
-        var trimmed = coreRuntimeDir.TrimEnd(
+        var rtTrimmed = coreRuntimeDir.TrimEnd(
             Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var sharedRoot = Path.GetDirectoryName(Path.GetDirectoryName(trimmed));
-        var dotnetRoot = sharedRoot is not null
-            ? Path.GetDirectoryName(sharedRoot)
-            : null;
+        var sharedRoot = Path.GetDirectoryName(Path.GetDirectoryName(rtTrimmed)); // …/shared
+        var dotnetRoot  = Path.GetDirectoryName(sharedRoot);                       // …/dotnet
 
-        var coreRefDir = FindLatestPackRefDir(dotnetRoot, "Microsoft.NETCore.App.Ref");
-        var desktopRefDir = FindLatestPackRefDir(dotnetRoot, "Microsoft.WindowsDesktop.App.Ref");
+        // ── Step 2: resolve BCL + WPF ref dirs, in priority order ────────────────
+        // Priority:
+        //   A) NuGet global-packages cache  (~/.nuget/packages/)
+        //      On cross-platform machines (macOS/Linux) MSBuild downloads
+        //      Microsoft.WindowsDesktop.App.Ref into the NuGet cache even when
+        //      EnableWindowsTargeting=true, because the SDK packs/ folder never
+        //      ships those on non-Windows hosts.
+        //   B) SDK packs/ directory  (works on Windows, and some Linux setups)
+        //   C) Shared-runtime folder (last resort — implementation assemblies)
 
-        // Prefer reference packs when available (works even without desktop runtime install).
+        string? coreRefDir    = null;
+        string? desktopRefDir = null;
+
+        // A) NuGet global-packages cache
+        var nugetHome = Environment.GetEnvironmentVariable("NUGET_PACKAGES")
+                        ?? Path.Combine(
+                            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                            ".nuget", "packages");
+
+        if (Directory.Exists(nugetHome))
+        {
+            coreRefDir    = FindLatestNuGetRefDir(nugetHome, "microsoft.netcore.app.ref");
+            desktopRefDir = FindLatestNuGetRefDir(nugetHome, "microsoft.windowsdesktop.app.ref");
+        }
+
+        // B) SDK packs/ folder (Windows / some Linux installs)
+        if (coreRefDir is null || desktopRefDir is null)
+        {
+            var sdkPackRoots = new List<string?>();
+            if (!string.IsNullOrWhiteSpace(dotnetRoot)) sdkPackRoots.Add(dotnetRoot);
+            var envRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT");
+            if (!string.IsNullOrWhiteSpace(envRoot)) sdkPackRoots.Add(envRoot);
+            // Common install locations
+            sdkPackRoots.Add("/usr/local/share/dotnet");
+            sdkPackRoots.Add("/opt/homebrew/share/dotnet");
+            sdkPackRoots.Add("/usr/share/dotnet");
+            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            if (!string.IsNullOrWhiteSpace(programFiles))
+                sdkPackRoots.Add(Path.Combine(programFiles, "dotnet"));
+
+            foreach (var root in sdkPackRoots.Where(r => !string.IsNullOrWhiteSpace(r)))
+            {
+                coreRefDir    ??= FindLatestPackRefDir(root!, "Microsoft.NETCore.App.Ref");
+                desktopRefDir ??= FindLatestPackRefDir(root!, "Microsoft.WindowsDesktop.App.Ref");
+                if (coreRefDir is not null && desktopRefDir is not null) break;
+            }
+        }
+
+        // ── Step 3: add BCL references ────────────────────────────────────────────
         var bclDir = coreRefDir ?? coreRuntimeDir;
         foreach (var coreAssembly in new[]
         {
@@ -243,6 +289,8 @@ internal static class WpfFastCompilationProvider
             TryAdd(Path.Combine(bclDir, coreAssembly));
         }
 
+        // ── Step 4: add WPF references ────────────────────────────────────────────
+        // C) Fall back to shared runtime (implementation) assemblies
         string? desktopDir = desktopRefDir;
         if (desktopDir is null && sharedRoot is not null)
         {
@@ -253,7 +301,8 @@ internal static class WpfFastCompilationProvider
         if (desktopDir is null)
         {
             Console.Error.WriteLine(
-                "[WPF-LS] WARNING: Microsoft.WindowsDesktop.App references not found in packs/ or shared runtime.");
+                "[WPF-LS] WARNING: Microsoft.WindowsDesktop.App references not found " +
+                "in NuGet cache, packs/, or shared runtime.");
         }
         else
         {
@@ -271,6 +320,30 @@ internal static class WpfFastCompilationProvider
         }
 
         return new WpfReferenceBuildResult(refs, refPaths);
+    }
+
+    /// <summary>
+    /// Finds the best (latest) <c>ref/net*</c> sub-directory inside a NuGet
+    /// global-packages cache entry for <paramref name="packageId"/>.
+    /// Layout: {nugetHome}/{packageId}/{version}/ref/{tfm}/
+    /// </summary>
+    private static string? FindLatestNuGetRefDir(string nugetHome, string packageId)
+    {
+        var pkgRoot = Path.Combine(nugetHome, packageId);
+        if (!Directory.Exists(pkgRoot)) return null;
+
+        // Pick the highest version directory (simple lexicographic descending,
+        // which works well for dotnet stable + preview version strings).
+        var versionDir = FindLatestVersionDir(pkgRoot);
+        if (versionDir is null) return null;
+
+        var refRoot = Path.Combine(versionDir, "ref");
+        if (!Directory.Exists(refRoot)) return null;
+
+        // Prefer the highest TFM folder (e.g. net10.0 > net6.0).
+        return Directory.GetDirectories(refRoot)
+            .OrderByDescending(static d => ParseVersionFromDir(d))
+            .FirstOrDefault();
     }
 
     private static string? TryPrimeTypeIndexFromDisk(Compilation compilation, IReadOnlyList<string> referencePaths)
@@ -425,7 +498,7 @@ internal static class WpfFastCompilationProvider
         }
 
         return Directory.GetDirectories(refRoot)
-            .OrderByDescending(static d => d, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(static d => ParseVersionFromDir(d))
             .FirstOrDefault();
     }
 
@@ -437,8 +510,25 @@ internal static class WpfFastCompilationProvider
         }
 
         return Directory.GetDirectories(root)
-            .OrderByDescending(static d => d, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(static d => ParseVersionFromDir(d))
             .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Parses a <see cref="Version"/> from the last path segment of
+    /// <paramref name="dirPath"/>, stripping any leading non-numeric prefix
+    /// (e.g. "net10.0" → 10.0, "10.0.2" → 10.0.2, "9.0.9" → 9.0.9).
+    /// Returns <see cref="Version.Parse">0.0</see> on parse failure so the
+    /// directory still participates in the sort.
+    /// </summary>
+    private static Version ParseVersionFromDir(string dirPath)
+    {
+        var name = Path.GetFileName(dirPath) ?? string.Empty;
+        // Strip a leading non-digit prefix like "net" or "netcoreapp".
+        var i = 0;
+        while (i < name.Length && !char.IsDigit(name[i])) i++;
+        var versionStr = name.Substring(i);
+        return Version.TryParse(versionStr, out var v) ? v : new Version(0, 0);
     }
 
     private sealed record WpfReferenceBuildResult(

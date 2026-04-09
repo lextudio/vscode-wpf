@@ -39,15 +39,44 @@
       }
     },
     {
-      "label": "Build Designer Tools",
+      "label": "Build Designer (.NET)",
       "type": "shell",
       "command": "pwsh",
       "args": [
         "-NoProfile", "-ExecutionPolicy", "Bypass",
-        "-File", "${workspaceFolder}/scripts/build-designer.ps1"
+        "-File", "${workspaceFolder}/scripts/build-designer.ps1",
+        "-OnlyModern"
       ],
       "group": "build",
       "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": false
+      }
+    },
+    {
+      "label": "Build Designer (NETFX)",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", "${workspaceFolder}/scripts/build-designer.ps1",
+        "-OnlyLegacy"
+      ],
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": false
+      }
+    },
+    {
+      "label": "Build Designer Tools",
+      "dependsOn": ["Build Designer (.NET)", "Build Designer (NETFX)"],
+      "dependsOrder": "parallel",
+      "group": "build",
       "presentation": {
         "reveal": "always",
         "panel": "shared",

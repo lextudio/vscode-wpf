@@ -24,6 +24,11 @@ internal sealed class DiagnosticCompilationProvider : ICompilationProvider
 {
     private readonly ICompilationProvider _inner;
 
+    // Track which project paths have already had their full compilation detail logged
+    // so the expensive per-assembly scan only runs once per project.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _loggedProjects =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public DiagnosticCompilationProvider(ICompilationProvider inner)
     {
         _inner = inner;
@@ -32,29 +37,30 @@ internal sealed class DiagnosticCompilationProvider : ICompilationProvider
     public async Task<CompilationSnapshot> GetCompilationAsync(
         string filePath, string? workspaceRoot, CancellationToken cancellationToken)
     {
-        Log($"GetCompilationAsync: filePath={filePath}, workspaceRoot={workspaceRoot}");
-
         var snapshot = await _inner.GetCompilationAsync(filePath, workspaceRoot, cancellationToken)
             .ConfigureAwait(false);
 
-        Log($"  ProjectPath={snapshot.ProjectPath ?? "(null)"}");
-        Log($"  Project={snapshot.Project?.Name ?? "(null)"}");
-        Log($"  Compilation={(snapshot.Compilation is not null ? "loaded" : "NULL")}");
-
-        if (!snapshot.Diagnostics.IsDefaultOrEmpty)
+        // Log compilation-level details only once per unique project path.
+        var key = snapshot.ProjectPath ?? workspaceRoot ?? filePath;
+        if (_loggedProjects.TryAdd(key, true))
         {
-            foreach (var diag in snapshot.Diagnostics)
+            Log($"Compilation loaded: ProjectPath={snapshot.ProjectPath ?? "(null)"}, " +
+                $"Project={snapshot.Project?.Name ?? "(null)"}, " +
+                $"HasCompilation={snapshot.Compilation is not null}");
+
+            if (!snapshot.Diagnostics.IsDefaultOrEmpty)
             {
-                Log($"  Diagnostic [{diag.Code}] {diag.Severity}: {diag.Message}");
+                foreach (var diag in snapshot.Diagnostics)
+                {
+                    Log($"  Diagnostic [{diag.Code}] {diag.Severity}: {diag.Message}");
+                }
             }
-        }
 
-        // Fire the expensive per-assembly scan asynchronously so it never
-        // delays the caller.  This is diagnostic/development logging only.
-        if (snapshot.Compilation is not null)
-        {
-            var compilationForLog = snapshot.Compilation;
-            _ = Task.Run(() => LogCompilationDetails(compilationForLog));
+            if (snapshot.Compilation is not null)
+            {
+                var compilationForLog = snapshot.Compilation;
+                _ = Task.Run(() => LogCompilationDetails(compilationForLog));
+            }
         }
 
         return snapshot;
@@ -63,6 +69,7 @@ internal sealed class DiagnosticCompilationProvider : ICompilationProvider
     public void Invalidate(string filePath)
     {
         Log($"Invalidate: {filePath}");
+        _loggedProjects.Clear();
         _inner.Invalidate(filePath);
     }
 
