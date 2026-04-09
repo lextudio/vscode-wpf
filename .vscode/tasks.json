@@ -103,6 +103,25 @@
       }
     },
     {
+      "label": "Build WPF Project Analyzer",
+      "type": "shell",
+      "command": "dotnet",
+      "args": [
+        "publish",
+        "${workspaceFolder}/src/WpfProjectAnalyzer/WpfProjectAnalyzer.csproj",
+        "--configuration", "Debug",
+        "--output", "${workspaceFolder}/tools/WpfProjectAnalyzer",
+        "--no-self-contained"
+      ],
+      "group": "build",
+      "problemMatcher": ["$msCompile"],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": false
+      }
+    },
+    {
       "label": "Build SharpDbg",
       "type": "shell",
       "command": "dotnet",
@@ -139,21 +158,21 @@
     },
     {
       "label": "Build Dev Prereqs (fast)",
-      "dependsOn": ["Build SharpDbg", "Build Language Server", "npm: build"],
+      "dependsOn": ["Build SharpDbg", "Build Language Server", "Build WPF Project Analyzer", "npm: build"],
       "dependsOrder": "parallel",
       "group": "build",
       "problemMatcher": []
     },
     {
       "label": "Build Dev Prereqs (watch)",
-      "dependsOn": ["Build SharpDbg", "Build Language Server", "npm: watch:build"],
+      "dependsOn": ["Build SharpDbg", "Build Language Server", "Build WPF Project Analyzer", "npm: watch:build"],
       "dependsOrder": "parallel",
       "group": "build",
       "problemMatcher": []
     },
     {
       "label": "Build All",
-      "dependsOn": ["Build Designer Tools", "Build SharpDbg", "Build Language Server", "npm: build"],
+      "dependsOn": ["Build Designer Tools", "Build SharpDbg", "Build Language Server", "Build WPF Project Analyzer", "npm: build"],
       "dependsOrder": "parallel",
       "group": "build",
       "problemMatcher": []

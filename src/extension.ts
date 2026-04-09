@@ -594,8 +594,18 @@ export function activate(context: vscode.ExtensionContext): void {
         const cfg = vscode.workspace.getConfiguration('wpf');
         const autoApply = cfg.get<boolean>('autoEnableWindowsTargeting', false);
 
-        const xml = await fs.promises.readFile(projectPath, 'utf8');
-        if (/<EnableWindowsTargeting>\s*true\s*<\/EnableWindowsTargeting>/i.test(xml)) {
+        // Prefer the analyzer CLI to apply the change so the extension does
+        // not manipulate XML directly. Resolve the analyzer binary first.
+        const analyzerExe = resolveAnalyzerExecutable(context);
+        if (!analyzerExe) {
+          vscode.window.showWarningMessage('WPF Project Analyzer binary not found. Build the extension tools first.');
+          return;
+        }
+
+        // Quick check: query the analyzer to see if the project already has the
+        // property (XML fallback will reliably detect an explicit setting).
+        const current = await runProjectAnalyzer(analyzerExe, projectPath);
+        if (current?.enableWindowsTargeting === true || current?.windowsTargetingStatus === 'enabled') {
           vscode.window.showInformationMessage('EnableWindowsTargeting is already set in this project.');
           return;
         }
@@ -620,41 +630,29 @@ export function activate(context: vscode.ExtensionContext): void {
           }
         }
 
-        // Prepare insertion text and location
-        const propMatch = /<PropertyGroup\b[^>]*>/i.exec(xml);
-        let insertText: string;
-        let insertOffset: number;
-        if (propMatch) {
-          insertText = '\n    <EnableWindowsTargeting>true</EnableWindowsTargeting>';
-          insertOffset = propMatch.index + propMatch[0].length;
-        } else {
-          const idx = xml.lastIndexOf('</Project>');
-          if (idx < 0) {
-            throw new Error('Invalid .csproj: missing </Project>');
-          }
-          insertText = '\n  <PropertyGroup>\n    <EnableWindowsTargeting>true</EnableWindowsTargeting>\n  </PropertyGroup>\n';
-          insertOffset = idx;
-        }
+        // Run the analyzer in apply mode (shows a progress notification)
+        await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Updating project...', cancellable: false }, async () => {
+          const isDll = analyzerExe.endsWith('.dll');
+          const cmd = isDll ? getPreferredDotnetPath() : analyzerExe;
+          const args = isDll ? [analyzerExe, '--apply-enable-windows-targeting', projectPath] : ['--apply-enable-windows-targeting', projectPath];
 
-        // Backup original file
-        const backupPath = projectPath + '.bak';
-        await fs.promises.writeFile(backupPath, xml, 'utf8');
+          let stdout = '';
+          let stderr = '';
+          const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+          proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+          proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
 
-        // Apply edit using WorkspaceEdit so users can undo
-        const doc = await vscode.workspace.openTextDocument(projectPath);
-        const edit = new vscode.WorkspaceEdit();
-        const pos = doc.positionAt(insertOffset);
-        edit.insert(doc.uri, pos, insertText);
-        const applied = await vscode.workspace.applyEdit(edit);
-        if (!applied) {
-          throw new Error('Failed to apply workspace edit');
-        }
-        await doc.save();
-
-        vscode.window.showInformationMessage('Added <EnableWindowsTargeting>true to project (backup saved).', 'Open file').then(async choice => {
-          if (choice === 'Open file') {
-            const opened = await vscode.workspace.openTextDocument(projectPath);
-            await vscode.window.showTextDocument(opened);
+          const code: number = await new Promise(resolve => proc.on('close', (c: number | null) => resolve(c ?? 0)));
+          if (code === 0) {
+            vscode.window.showInformationMessage('Added <EnableWindowsTargeting>true to project (backup saved).', 'Open file').then(async choice => {
+              if (choice === 'Open file') {
+                const opened = await vscode.workspace.openTextDocument(projectPath);
+                await vscode.window.showTextDocument(opened);
+              }
+            });
+          } else {
+            const errMsg = stderr || stdout || 'Unknown error from analyzer';
+            vscode.window.showErrorMessage(`Failed to update project file: ${errMsg}`);
           }
         });
       } catch (err) {
@@ -1241,7 +1239,8 @@ function isSupportedProjectPath(projectPath: string): boolean {
 
 interface ProjectAnalysisResult {
   projectPath: string;
-  windowsTargetingStatus: string;
+  windowsTargetingStatus?: string;
+  enableWindowsTargeting?: boolean;
 }
 
 /**

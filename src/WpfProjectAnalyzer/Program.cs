@@ -21,14 +21,54 @@ internal static class Program
     {
         if (args.Length < 1 || string.IsNullOrWhiteSpace(args[0]))
         {
-            Console.Error.WriteLine("Usage: wpf-project-analyzer <path-to-project-file>");
+            Console.Error.WriteLine("Usage: wpf-project-analyzer [--apply-enable-windows-targeting] <path-to-project-file>");
             return 3;
         }
 
-        var projectPath = Path.GetFullPath(args[0]);
-        if (!File.Exists(projectPath))
+        // Support an apply-mode to let the CLI modify a project file safely
+        // from other tools (e.g. the VS Code extension) rather than having
+        // the client manipulate XML itself.
+        if (string.Equals(args[0], "--apply-enable-windows-targeting", StringComparison.OrdinalIgnoreCase))
         {
-            WriteError("project_not_found", $"Project file not found: {projectPath}");
+            if (args.Length < 2 || string.IsNullOrWhiteSpace(args[1]))
+            {
+                Console.Error.WriteLine("Usage: wpf-project-analyzer --apply-enable-windows-targeting <path-to-project-file>");
+                return 3;
+            }
+
+            var projectPath = Path.GetFullPath(args[1]);
+            if (!File.Exists(projectPath))
+            {
+                Console.Error.WriteLine($"Project file not found: {projectPath}");
+                return 1;
+            }
+
+            try
+            {
+                var applied = ApplyEnableWindowsTargeting(projectPath, out var message);
+                if (applied)
+                {
+                    var res = new { projectPath, applied = true, message };
+                    Console.WriteLine(JsonSerializer.Serialize(res, JsonOptions));
+                    return 0;
+                }
+                else
+                {
+                    Console.Error.WriteLine(message);
+                    return 0; // not an error if already present
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Failed to apply change: {ex.Message}");
+                return 2;
+            }
+        }
+
+        var projectPathArg = Path.GetFullPath(args[0]);
+        if (!File.Exists(projectPathArg))
+        {
+            WriteError("project_not_found", $"Project file not found: {projectPathArg}");
             return 1;
         }
 
@@ -43,7 +83,7 @@ internal static class Program
         {
             try
             {
-                result = MsBuildAnalyzer.Analyze(projectPath);
+                result = MsBuildAnalyzer.Analyze(projectPathArg);
                 Console.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
                 return 0;
             }
@@ -56,7 +96,7 @@ internal static class Program
 
         try
         {
-            result = AnalyzeWithXml(projectPath);
+            result = AnalyzeWithXml(projectPathArg);
             result.MsBuildAvailable = false;
         }
         catch (Exception xmlEx)
@@ -67,6 +107,11 @@ internal static class Program
 
         Console.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
         return 0;
+    }
+
+    private static bool ApplyEnableWindowsTargeting(string projectPath, out string message)
+    {
+        return MsBuildAnalyzer.ApplyEnableWindowsTargeting(projectPath, out message);
     }
 
     // -------------------------------------------------------------------------

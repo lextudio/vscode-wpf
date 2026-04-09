@@ -1,6 +1,7 @@
 [submodule "external/WpfDesigner"]
 	path = external/WpfDesigner
-	url = https://github.com/icsharpcode/WpfDesigner
+	url = https://github.com/lextudio/WpfDesigner
+	branch = vscode
 [submodule "external/SharpDbg"]
 	path = external/SharpDbg
 	url = https://github.com/lextudio/SharpDbg.git

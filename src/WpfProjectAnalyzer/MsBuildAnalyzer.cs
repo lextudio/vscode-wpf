@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using Microsoft.Build.Construction;
 using Microsoft.Build.Evaluation;
 using Microsoft.Build.Locator;
 
@@ -23,7 +24,12 @@ internal static class MsBuildAnalyzer
     public static ProjectAnalysisResult Analyze(string projectPath)
     {
         EnsureLocatorRegistered();
+        return AnalyzeCore(projectPath);
+    }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static ProjectAnalysisResult AnalyzeCore(string projectPath)
+    {
         // Use a fresh ProjectCollection so we don't leak state across calls.
         using var collection = new ProjectCollection();
 
@@ -183,6 +189,55 @@ internal static class MsBuildAnalyzer
 
         // The property exists and was set by the project or an import.
         return string.Equals(prop.EvaluatedValue, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Adds <c>&lt;EnableWindowsTargeting&gt;true&lt;/EnableWindowsTargeting&gt;</c> to the
+    /// first <c>&lt;PropertyGroup&gt;</c> in the project file using the MSBuild construction
+    /// API. <c>ProjectRootElement</c> preserves original formatting, whitespace, and
+    /// comments, and does not inject an XML declaration that was absent in the original.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static bool ApplyEnableWindowsTargeting(string projectPath, out string message)
+    {
+        EnsureLocatorRegistered();
+        return ApplyEnableWindowsTargetingCore(projectPath, out message);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool ApplyEnableWindowsTargetingCore(string projectPath, out string message)
+    {
+        var pre = ProjectRootElement.Open(projectPath);
+
+        // Check whether the property is already explicitly present in the XML.
+        var existing = pre.Properties
+            .FirstOrDefault(p => string.Equals(p.Name, "EnableWindowsTargeting", StringComparison.OrdinalIgnoreCase)
+                              && string.Equals(p.Value?.Trim(), "true", StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+        {
+            message = "EnableWindowsTargeting is already set in the project file.";
+            return false;
+        }
+
+        // Find the first PropertyGroup (prefer one with no Condition so we pick
+        // an unconditional group) or create one.
+        var propGroup = pre.PropertyGroups.FirstOrDefault(g => string.IsNullOrEmpty(g.Condition))
+                     ?? pre.PropertyGroups.FirstOrDefault()
+                     ?? pre.AddPropertyGroup();
+
+        // Insert at the top of the group so it is encountered early by MSBuild.
+        propGroup.PrependChild(pre.CreatePropertyElement("EnableWindowsTargeting"));
+        // CreatePropertyElement leaves Value empty; set it explicitly.
+        var newProp = propGroup.Children.OfType<ProjectPropertyElement>().First();
+        newProp.Value = "true";
+
+        // Backup then save via ProjectRootElement — preserves original XML structure.
+        var backupPath = projectPath + ".bak";
+        File.Copy(projectPath, backupPath, overwrite: true);
+        pre.Save(projectPath);
+
+        message = $"Added <EnableWindowsTargeting>true</EnableWindowsTargeting> to project (backup: {backupPath}).";
+        return true;
     }
 
     private static List<string> ParseTfmList(string? targetFramework, string? targetFrameworks)
