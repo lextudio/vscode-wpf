@@ -89,6 +89,34 @@ export async function startLanguageServer(context: vscode.ExtensionContext): Pro
   try {
     await client.start();
     getLog().appendLine('[Language Server] Ready.');
+    // Handle server notification that a WPF project may be missing
+    // <EnableWindowsTargeting>true</EnableWindowsTargeting> (non-Windows hosts).
+    client.onNotification('axsg/enableWindowsTargetingMissing', (params: any) => {
+      try {
+        const projectPath = params?.projectPath;
+        if (projectPath) {
+          // Delegate the user prompt & fix to the extension command handler.
+          void vscode.commands.executeCommand('wpf.addEnableWindowsTargeting', projectPath);
+        }
+      } catch (err) {
+        getLog().appendLine(`[Language Server] enableWindowsTargetingMissing handler error: ${err}`);
+      }
+    });
+
+      // Query server for any missing EnableWindowsTargeting detections
+      // that may have occurred before the client registered handlers.
+      try {
+        const missing: string[] | undefined = await client.sendRequest('axsg/getMissingEnableWindowsTargeting');
+        if (Array.isArray(missing)) {
+          for (const projectPath of missing) {
+            if (projectPath) {
+              void vscode.commands.executeCommand('wpf.addEnableWindowsTargeting', projectPath);
+            }
+          }
+        }
+      } catch (err) {
+        getLog().appendLine(`[Language Server] getMissingEnableWindowsTargeting request failed: ${err}`);
+      }
   } catch (err) {
     getLog().appendLine(`[Language Server] Failed to start: ${err}`);
     vscode.window.showErrorMessage(`WPF XAML Language Server failed to start. See "WPF Extension" output channel.`);

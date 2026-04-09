@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Must NOT target -windows: this tool runs cross-platform to detect
+         whether a project has Windows targeting enabled. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>wpf-project-analyzer</AssemblyName>
+    <RootNamespace>WpfProjectAnalyzer</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Runtime assemblies come from the located SDK; ExcludeAssets="runtime"
+         avoids version conflicts with whatever SDK the user has installed. -->
+    <PackageReference Include="Microsoft.Build" Version="17.14.28" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.Build.Locator" Version="1.10.2" />
+  </ItemGroup>
+</Project>

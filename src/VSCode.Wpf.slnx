@@ -9,5 +9,6 @@
   <Project Path="../external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenerator.RemoteProtocol/XamlToCSharpGenerator.RemoteProtocol.csproj" />
   <Project Path="WpfHotReload.Runtime/WpfHotReload.Runtime.csproj" />
   <Project Path="XamlLanguageServer.Wpf.Tests/XamlLanguageServer.Wpf.Tests.csproj" />
+  <Project Path="WpfProjectAnalyzer/WpfProjectAnalyzer.csproj" />
   <Project Path="XamlLanguageServer.Wpf/XamlLanguageServer.Wpf.csproj" />
 </Solution>

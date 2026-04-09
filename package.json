@@ -161,12 +161,12 @@
       "editor/title": [
         {
           "command": "wpf.hotReload",
-          "when": "resourceExtname == .xaml",
+          "when": "resourceExtname == .xaml && (isWindows || config.wpf.showHotReloadOnNonWindows)",
           "group": "navigation"
         },
         {
           "command": "wpf.launchDesigner",
-          "when": "resourceExtname == .xaml",
+          "when": "resourceExtname == .xaml && (isWindows || config.wpf.showHotReloadOnNonWindows)",
           "group": "navigation@1"
         }
       ],
@@ -283,6 +283,18 @@
           "type": "boolean",
           "default": false,
           "description": "Enable detailed logging for WPF runtime hot reload sessions in the .logs directory."
+        }
+        ,
+        "wpf.autoEnableWindowsTargeting": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, automatically add <EnableWindowsTargeting>true</EnableWindowsTargeting> to WPF projects opened on macOS/Linux without prompting."
+        }
+        ,
+        "wpf.showHotReloadOnNonWindows": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the Hot Reload and Launch Designer editor title buttons on macOS and Linux. Default is false to avoid exposing Windows-only functionality unless explicitly enabled."
         }
       }
     }

@@ -54,7 +54,7 @@ Runtime hot reload is now **runtime-first, push-based, and debugger-free**. The 
 
 ## Platform Support
 
-**Windows only.** The extension declares `"os": ["win32"]` in `package.json`. VS Code and the Marketplace use this field to block installation on macOS and Linux. WPF and XamlDesigner.exe are Windows-only technologies, so no cross-platform support is planned.
+By default the editor title buttons for Hot Reload and Launch Designer are shown only on Windows. The extension itself can be installed on macOS and Linux; to enable the Hot Reload and Launch Designer buttons on those platforms set the configuration `wpf.showHotReloadOnNonWindows` to `true`. Note: Designer and Hot Reload rely on Windows tooling (XamlDesigner.exe and the WPF runtime) and may not function natively on non-Windows platforms — enable this setting only if you understand the platform limitations.
 
 ---
 

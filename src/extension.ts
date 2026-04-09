@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { spawn } from 'child_process';
 import {
   areProjectOutputsUpToDate,
   findProjectForFile,
@@ -30,6 +31,7 @@ import {
   startLanguageServer,
   stopLanguageServer,
 } from './languageServer';
+import { getPreferredDotnetPath } from './dotnetBootstrap';
 import {
   getRuntimeSessionInfo,
   hasRunningRuntimeSession,
@@ -67,6 +69,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Start the WPF XAML language server (no-op if binary not yet built).
   startLanguageServer(context);
+  // On non-Windows, check if any WPF project is missing EnableWindowsTargeting.
+  void checkWindowsTargetingForWorkspace(context);
   registerRuntimeHotReload(context);
   registerToolbox(context);
   startReviewPromptScheduler(context);
@@ -572,6 +576,91 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('wpf.buildDesignerTools', () =>
       buildDesignerTools(context)
     )
+  );
+
+  // -------------------------------------------------------------------------
+  // Command: wpf.addEnableWindowsTargeting
+  // Adds <EnableWindowsTargeting>true</EnableWindowsTargeting> to a csproj
+  // on non-Windows hosts when the language server detects it's missing.
+  // -------------------------------------------------------------------------
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf.addEnableWindowsTargeting', async (projectPath?: string) => {
+      if (!projectPath) {
+        vscode.window.showWarningMessage('No project path provided to add EnableWindowsTargeting.');
+        return;
+      }
+
+      try {
+        const cfg = vscode.workspace.getConfiguration('wpf');
+        const autoApply = cfg.get<boolean>('autoEnableWindowsTargeting', false);
+
+        const xml = await fs.promises.readFile(projectPath, 'utf8');
+        if (/<EnableWindowsTargeting>\s*true\s*<\/EnableWindowsTargeting>/i.test(xml)) {
+          vscode.window.showInformationMessage('EnableWindowsTargeting is already set in this project.');
+          return;
+        }
+
+        // If not autoApply, prompt the user
+        if (!autoApply) {
+          const choice = await vscode.window.showWarningMessage(
+            `The project ${path.basename(projectPath)} may require <EnableWindowsTargeting>true to build on this platform. Add it to the project file?`,
+            'Add to csproj',
+            'Open csproj',
+            'Ignore'
+          );
+
+          if (choice === 'Open csproj') {
+            const doc = await vscode.workspace.openTextDocument(projectPath);
+            await vscode.window.showTextDocument(doc);
+            return;
+          }
+
+          if (choice !== 'Add to csproj') {
+            return; // user chose Ignore or dismissed
+          }
+        }
+
+        // Prepare insertion text and location
+        const propMatch = /<PropertyGroup\b[^>]*>/i.exec(xml);
+        let insertText: string;
+        let insertOffset: number;
+        if (propMatch) {
+          insertText = '\n    <EnableWindowsTargeting>true</EnableWindowsTargeting>';
+          insertOffset = propMatch.index + propMatch[0].length;
+        } else {
+          const idx = xml.lastIndexOf('</Project>');
+          if (idx < 0) {
+            throw new Error('Invalid .csproj: missing </Project>');
+          }
+          insertText = '\n  <PropertyGroup>\n    <EnableWindowsTargeting>true</EnableWindowsTargeting>\n  </PropertyGroup>\n';
+          insertOffset = idx;
+        }
+
+        // Backup original file
+        const backupPath = projectPath + '.bak';
+        await fs.promises.writeFile(backupPath, xml, 'utf8');
+
+        // Apply edit using WorkspaceEdit so users can undo
+        const doc = await vscode.workspace.openTextDocument(projectPath);
+        const edit = new vscode.WorkspaceEdit();
+        const pos = doc.positionAt(insertOffset);
+        edit.insert(doc.uri, pos, insertText);
+        const applied = await vscode.workspace.applyEdit(edit);
+        if (!applied) {
+          throw new Error('Failed to apply workspace edit');
+        }
+        await doc.save();
+
+        vscode.window.showInformationMessage('Added <EnableWindowsTargeting>true to project (backup saved).', 'Open file').then(async choice => {
+          if (choice === 'Open file') {
+            const opened = await vscode.workspace.openTextDocument(projectPath);
+            await vscode.window.showTextDocument(opened);
+          }
+        });
+      } catch (err) {
+        vscode.window.showErrorMessage(`Failed to update project file: ${String(err)}`);
+      }
+    })
   );
 
 
@@ -1144,6 +1233,92 @@ function getCodeBehindLanguage(codeBehindPath: string): CodeBehindLanguage {
 function isSupportedProjectPath(projectPath: string): boolean {
   const lower = projectPath.toLowerCase();
   return lower.endsWith('.csproj') || lower.endsWith('.vbproj') || lower.endsWith('.fsproj');
+}
+
+// ---------------------------------------------------------------------------
+// Windows targeting check via WpfProjectAnalyzer CLI tool
+// ---------------------------------------------------------------------------
+
+interface ProjectAnalysisResult {
+  projectPath: string;
+  windowsTargetingStatus: string;
+}
+
+/**
+ * Resolves the path to the `wpf-project-analyzer` binary published under
+ * `tools/WpfProjectAnalyzer/` in the extension directory.
+ * Returns null if the binary hasn't been built yet.
+ */
+function resolveAnalyzerExecutable(context: vscode.ExtensionContext): string | null {
+  const toolsDir = path.join(context.extensionPath, 'tools', 'WpfProjectAnalyzer');
+  for (const name of ['wpf-project-analyzer.exe', 'wpf-project-analyzer.dll']) {
+    const candidate = path.join(toolsDir, name);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Runs `wpf-project-analyzer <projectPath>` and returns the parsed JSON result,
+ * or null if the tool fails or produces unexpected output.
+ */
+function runProjectAnalyzer(
+  analyzerExe: string,
+  projectPath: string,
+): Promise<ProjectAnalysisResult | null> {
+  return new Promise(resolve => {
+    const isDll = analyzerExe.endsWith('.dll');
+    const cmd = isDll ? getPreferredDotnetPath() : analyzerExe;
+    const args = isDll ? [analyzerExe, projectPath] : [projectPath];
+
+    let stdout = '';
+    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    proc.on('error', () => resolve(null));
+    proc.on('close', (code: number | null) => {
+      if (code !== 0 && code !== null) {
+        resolve(null);
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout) as ProjectAnalysisResult);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+/**
+ * On non-Windows hosts, scans all WPF projects in the workspace and prompts
+ * the user to add `<EnableWindowsTargeting>true</EnableWindowsTargeting>` to
+ * any project that requires it.
+ */
+async function checkWindowsTargetingForWorkspace(context: vscode.ExtensionContext): Promise<void> {
+  if (process.platform === 'win32') {
+    return; // Only relevant on macOS/Linux
+  }
+
+  const analyzerExe = resolveAnalyzerExecutable(context);
+  if (!analyzerExe) {
+    return; // Binary not built yet — silently skip
+  }
+
+  let projects: string[];
+  try {
+    projects = await findProjectsInWorkspace();
+  } catch {
+    return;
+  }
+
+  for (const projectPath of projects) {
+    const result = await runProjectAnalyzer(analyzerExe, projectPath);
+    if (result?.windowsTargetingStatus === 'required') {
+      void vscode.commands.executeCommand('wpf.addEnableWindowsTargeting', projectPath);
+    }
+  }
 }
 
 export async function deactivate(): Promise<void> {
