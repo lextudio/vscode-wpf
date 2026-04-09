@@ -67,9 +67,12 @@ function logEventHandler(message: string): void {
 export function activate(context: vscode.ExtensionContext): void {
   console.log('VS Code WPF extension is now active.');
 
-  // Start the WPF XAML language server (no-op if binary not yet built).
-  startLanguageServer(context);
-  // On non-Windows, check if any WPF project is missing EnableWindowsTargeting.
+  // On Windows start the language server immediately.
+  // On non-Windows, checkWindowsTargetingForWorkspace runs the analyzer first
+  // and only starts the server once project compatibility is confirmed.
+  if (process.platform === 'win32') {
+    startLanguageServer(context);
+  }
   void checkWindowsTargetingForWorkspace(context);
   registerRuntimeHotReload(context);
   registerToolbox(context);
@@ -1297,27 +1300,51 @@ function runProjectAnalyzer(
  */
 async function checkWindowsTargetingForWorkspace(context: vscode.ExtensionContext): Promise<void> {
   if (process.platform === 'win32') {
-    return; // Only relevant on macOS/Linux
+    return; // Windows already started the server in activate()
   }
 
   const analyzerExe = resolveAnalyzerExecutable(context);
   if (!analyzerExe) {
-    return; // Binary not built yet — silently skip
+    // Analyzer binary not built yet — start the server without checks.
+    startLanguageServer(context);
+    return;
   }
 
   let projects: string[];
   try {
     projects = await findProjectsInWorkspace();
   } catch {
+    startLanguageServer(context);
     return;
   }
 
-  for (const projectPath of projects) {
-    const result = await runProjectAnalyzer(analyzerExe, projectPath);
-    if (result?.windowsTargetingStatus === 'required') {
-      void vscode.commands.executeCommand('wpf.addEnableWindowsTargeting', projectPath);
-    }
+  // Run the analyzer on all projects first to get a full picture before
+  // making any decisions about the language server.
+  const results = await Promise.all(
+    projects.map(async p => ({ projectPath: p, result: await runProjectAnalyzer(analyzerExe, p) }))
+  );
+
+  // If any project is a legacy (non-SDK) .NET Framework WPF project the
+  // language server cannot provide XAML tooling on macOS/Linux — bail out.
+  const legacyProjects = results.filter(r => r.result?.windowsTargetingStatus === 'legacy_wpf');
+  if (legacyProjects.length > 0) {
+    void vscode.window.showWarningMessage(
+      'Legacy .NET Framework WPF projects are not supported on macOS/Linux. ' +
+      'The XAML language server will not start. Migrate to an SDK-style project to enable tooling.'
+    );
+    return;
   }
+
+  // For SDK-style projects missing EnableWindowsTargeting, prompt the user
+  // and apply the change — await each so the project file is updated before
+  // the language server loads.
+  const requiredProjects = results.filter(r => r.result?.windowsTargetingStatus === 'required');
+  for (const { projectPath } of requiredProjects) {
+    await vscode.commands.executeCommand('wpf.addEnableWindowsTargeting', projectPath);
+  }
+
+  // All projects are either already compatible or have just been updated.
+  startLanguageServer(context);
 }
 
 export async function deactivate(): Promise<void> {

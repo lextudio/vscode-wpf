@@ -252,9 +252,21 @@ internal static class Program
 
         if (result.IsLegacyFramework)
         {
-            // Legacy .NET Framework projects are inherently Windows — no action needed
-            // for Windows targeting, but note they need special handling.
-            result.WindowsTargetingStatus = "native";
+            if (result.IsWpfProject && !OperatingSystem.IsWindows())
+            {
+                // Legacy .NET Framework WPF projects cannot be built or analysed on
+                // macOS/Linux: Mono's MSBuild ships Roslyn 3.x (no IIncrementalGenerator)
+                // and has no WPF XAML codegen (PresentationBuildTasks).
+                result.WindowsTargetingStatus = "legacy_wpf";
+                suggestions.Add(
+                    "Legacy .NET Framework WPF projects are not supported on macOS/Linux. " +
+                    "Migrate to an SDK-style project with <UseWPF>true</UseWPF> to enable cross-platform tooling.");
+            }
+            else
+            {
+                // Legacy .NET Framework projects on Windows — no action needed.
+                result.WindowsTargetingStatus = "native";
+            }
         }
         else if (result.IsSdkStyle)
         {

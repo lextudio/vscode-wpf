@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.9.11] - 2026-04-09
+
+- Added limited editing support for Windows targeting WPF projects on macOS/Linux.
+
 ## [0.9.10] - 2026-04-03
 
 - Added VB.NET and F# support.
