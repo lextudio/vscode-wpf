@@ -2,6 +2,29 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 
+/**
+ * Public API exposed by the lextudio.sharpdbg extension via its activate() return value.
+ * Access it with getSharpDbgApi().
+ */
+export interface SharpDbgApi {
+  /** Locates MSBuild.exe via vswhere. Returns undefined on non-Windows or when VS is not installed. */
+  findMsBuildExe(): Promise<string | undefined>;
+  /**
+   * Resolves a .NET project to a launchable program, detecting project kind, selecting the build
+   * tool, querying TargetPath via MSBuild, and building the project if the output binary is missing.
+   */
+  resolveProgramFromProjectPath(
+    folder: vscode.WorkspaceFolder | undefined,
+    projectPath: string,
+    logger?: vscode.OutputChannel
+  ): Promise<{ program: string; args: string[]; cwd: string; runtimeFlavor: string }>;
+}
+
+/** Returns the SharpDbg public API, or undefined if the extension is not active. */
+export function getSharpDbgApi(): SharpDbgApi | undefined {
+  return vscode.extensions.getExtension<SharpDbgApi>('lextudio.sharpdbg')?.exports;
+}
+
 export interface SharpDbgAdapter {
   command: string;
   args: string[];

@@ -4,9 +4,9 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import { areProjectOutputsUpToDate, getLaunchTarget, parseProject } from './projectDiscovery';
+import { areProjectOutputsUpToDate, parseProject } from './projectDiscovery';
 import { buildProject } from './designerLauncher';
-import { resolveSharpDbgAdapter, promptInstallSharpDbg } from './sharpdbgAdapter';
+import { resolveSharpDbgAdapter, promptInstallSharpDbg, getSharpDbgApi } from './sharpdbgAdapter';
 
 interface RuntimeSessionInfo {
   childProcess: cp.ChildProcess;
@@ -130,7 +130,6 @@ async function prepareHotReloadLaunch(
   const isFramework = helperTargetTfm === 'net462';
 
   const cfg = vscode.workspace.getConfiguration('wpf');
-  const dotnetPath = cfg.get<string>('dotnetPath', 'dotnet');
   const autoBuild = getAutoBuildOnDesignerLaunch(cfg);
   const enableLogging = cfg.get<boolean>('enableRuntimeHotReloadLogging', false);
 
@@ -152,10 +151,21 @@ async function prepareHotReloadLaunch(
 
   const helperAssemblyPath = await ensureRuntimeHelperBuilt(projectPath, helperTargetTfm, channel);
 
-  const launchTarget = getLaunchTarget(projectPath, dotnetPath);
-  if (!launchTarget) {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.find(
+    f => projectPath.startsWith(f.uri.fsPath)
+  );
+  const sharpdbgApi = getSharpDbgApi();
+  if (!sharpdbgApi) {
+    vscode.window.showErrorMessage('SharpDbg extension is not available. Install lextudio.sharpdbg to use hot reload.');
+    return null;
+  }
+  let launchTarget: { program: string; args: string[]; cwd: string };
+  try {
+    launchTarget = await sharpdbgApi.resolveProgramFromProjectPath(workspaceFolder, projectPath, channel);
+  } catch (err) {
+    channel.appendLine(`[Runtime] Failed to resolve launch target: ${err}`);
     vscode.window.showErrorMessage(
-      `Could not find a launchable output for ${path.basename(projectPath)}. Build the project first.`
+      `Could not resolve launch target for ${path.basename(projectPath)}: ${(err as Error).message}`
     );
     return null;
   }
