@@ -114,6 +114,17 @@ The WPF type is resolved from a built-in mapping that covers ~50 common controls
 (`Button`, `TextBlock`, `Grid`, `ListBox`, etc.) with `FrameworkElement` as fallback
 for unrecognised elements.
 
+### Application XAML loading
+
+`XamlReader.Load(Application.xaml)` instantiates the `x:Class` type, which would
+create a second `Application` — WPF forbids this (singleton constraint).
+The generated `App.InitializeComponent()` therefore parses the XAML as plain XML via
+`XDocument.Load` and extracts only what it needs:
+
+- `StartupUri` attribute → `this.StartupUri`
+- Top-level `<Application.Resources>` children → `this.Resources.MergedDictionaries`
+  (each child is loaded with `XamlReader.Parse` as a `ResourceDictionary`)
+
 ## Current Prototype Limits
 
 1. Typed `x:Name` field generation covers common controls via a static name→type map;

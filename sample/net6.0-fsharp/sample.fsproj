@@ -1,15 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net6.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <WpfXsgEnabled>true</WpfXsgEnabled>
     <WpfXsgTargetLanguage>FSharp</WpfXsgTargetLanguage>
-    <RestoreSources>$(MSBuildProjectDirectory)\..\..\artifacts\local-packages;$(RestoreSources)</RestoreSources>
+    <!-- <RestoreSources>$(MSBuildProjectDirectory)\..\..\artifacts\local-packages;$(RestoreSources)</RestoreSources> -->
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="XamlToCSharpGenerator.Generator.WPF" Version="0.1.2-5" PrivateAssets="all" />
+    <PackageReference Include="XamlToCSharpGenerator.Generator.WPF" Version="0.1.3" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
