@@ -3,6 +3,7 @@
 ## [0.9.11] - 2026-04-09
 
 - Added limited editing support for Windows targeting WPF projects on macOS/Linux.
+- Moved SharpDbg dependency to a separate extension (`lextudio.sharpdbg`).
 
 ## [0.9.10] - 2026-04-03
 

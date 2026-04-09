@@ -2,13 +2,14 @@
   "name": "vscode-wpf",
   "displayName": "VS Code Tools for WPF",
   "description": "VS Code extension for WPF (.xaml) files with visual designer integration.",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "publisher": "lextudio",
   "engines": {
     "vscode": "^1.101.0"
   },
   "extensionDependencies": [
-    "ms-dotnettools.vscode-dotnet-runtime"
+    "ms-dotnettools.vscode-dotnet-runtime",
+    "lextudio.sharpdbg"
   ],
   "activationEvents": [
     "onView:wpf.toolbox",
@@ -115,10 +116,6 @@
       {
         "type": "wpf-sharpdbg",
         "label": "WPF (SharpDbg)",
-        "program": "./tools/SharpDbg/SharpDbg.Cli.exe",
-        "args": [
-          "--interpreter=vscode"
-        ],
         "configurationAttributes": {
           "launch": {
             "required": [
@@ -283,14 +280,12 @@
           "type": "boolean",
           "default": false,
           "description": "Enable detailed logging for WPF runtime hot reload sessions in the .logs directory."
-        }
-        ,
+        },
         "wpf.autoEnableWindowsTargeting": {
           "type": "boolean",
           "default": false,
           "description": "If true, automatically add <EnableWindowsTargeting>true</EnableWindowsTargeting> to WPF projects opened on macOS/Linux without prompting."
-        }
-        ,
+        },
         "wpf.showHotReloadOnNonWindows": {
           "type": "boolean",
           "default": false,

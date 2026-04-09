@@ -10,9 +10,13 @@ WPF's diagnostic infrastructure.
 
 Current launch model:
 
-- Clicking `WPF: Hot Reload` launches the target app under the bundled `SharpDbg` debugger.
+- Clicking `WPF: Hot Reload` launches the target app under the SharpDbg debugger provided by the separate `lextudio.sharpdbg` extension. `vscode-wpf` no longer bundles SharpDbg; instead the SharpDbg extension is declared in `extensionDependencies` and will be installed automatically when possible.
 - The first click starts the debugged app and runtime agent; subsequent clicks push XAML updates.
-- This keeps crash investigation available during hot reload sessions (breakpoints, call stack, locals).
+- The `vscode-wpf` extension selects the SharpDbg adapter automatically based on the project's target framework:
+  - .NET Framework (net4*): SharpDbg's native executable adapter is used for Framework debugging.
+  - .NET Core / modern .NET: the `dotnet` host runs the SharpDbg CLI DLL (framework-dependent) supplied by the SharpDbg extension.
+- You can customize the adapter behavior via the SharpDbg extension settings (for example `sharpdbg.cliDllPath`, `sharpdbg.adapterExecutable`, `sharpdbg.adapterArgs`, `sharpdbg.dotnetPath`, `sharpdbg.adapterCwd`, `sharpdbg.adapterEnv`).
+- If SharpDbg is not available, the extension will prompt to install `lextudio.sharpdbg` from the Marketplace; you can also install it manually.
 
 ## Background: WPF Diagnostic APIs
 

@@ -27,6 +27,15 @@ development experience for WPF with open source components
 
 For consistent formatting of your XAML files, we recommend optionally installing the community **XAML Styler** extension (`dabbinavo.xamlstyler`). The first time you use this extension you'll receive a prompt; you can also find it manually in the Extensions view by searching for "XAML Styler". This extension is optional—the WPF features work without it.
 
+### Companion Debugger (SharpDbg)
+
+- Debugging WPF apps from this extension is performed by the separate SharpDbg debugger extension (`lextudio.sharpdbg`). `vscode-wpf` no longer bundles SharpDbg; instead the SharpDbg extension is declared in `extensionDependencies` and will be installed automatically when possible.
+- The SharpDbg extension provides two adapter modes and `vscode-wpf` will select the appropriate one based on the project's target framework:
+  - .NET Framework (net4*): uses a native SharpDbg executable shipped for Framework debugging.
+  - .NET Core / modern .NET: uses the `dotnet` host to run the SharpDbg CLI DLL (`SharpDbg.Cli.dll`).
+- If you need to override the shipped adapter or CLI path, configure the SharpDbg settings in VS Code (see the SharpDbg extension settings such as `sharpdbg.cliDllPath`, `sharpdbg.adapterExecutable`, `sharpdbg.adapterArgs`, and `sharpdbg.dotnetPath`).
+- If hot-reload debugging fails because SharpDbg is missing, install `lextudio.sharpdbg` from the Marketplace or follow the prompt shown by the extension.
+
 ### Using the Extension
 
 - Activates on `*.xaml` files.

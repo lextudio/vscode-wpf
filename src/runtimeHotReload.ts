@@ -6,6 +6,7 @@ import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { areProjectOutputsUpToDate, getLaunchTarget, parseProject } from './projectDiscovery';
 import { buildProject } from './designerLauncher';
+import { resolveSharpDbgAdapter, promptInstallSharpDbg } from './sharpdbgAdapter';
 
 interface RuntimeSessionInfo {
   childProcess: cp.ChildProcess;
@@ -303,15 +304,14 @@ export async function startRuntimeHotReloadSessionWithDebugger(
 
   const channel = getOutputChannel();
 
-  // Find SharpDbg executable.
-  const sharpDbgPath = resolveSharpDbgPath();
-  if (!sharpDbgPath) {
-    vscode.window.showErrorMessage(
-      'SharpDbg debugger not found. Build it first with the "Build SharpDbg" task.'
-    );
+  // Resolve SharpDbg adapter (native exe for .NET Framework, dotnet+DLL for Core/.NET).
+  const adapter = resolveSharpDbgAdapter(prep.isFramework);
+  if (!adapter) {
+    // Offer to install SharpDbg from the Marketplace (respects suppression setting).
+    await promptInstallSharpDbg(context);
     return false;
   }
-  channel.appendLine(`[Runtime] Using SharpDbg: ${sharpDbgPath}`);
+  channel.appendLine(`[Runtime] Using SharpDbg adapter: ${adapter.command} ${adapter.args.join(' ')}`);
 
   // Build the env vars as a flat record for the debug launch config.
   // Only include values that are new/changed for this launch.
@@ -349,6 +349,9 @@ export async function startRuntimeHotReloadSessionWithDebugger(
     cwd: prep.cwd,
     env: hotReloadEnv,
     stopAtEntry: false,
+    // Inform the debug adapter factory about the runtime type so it can pick the correct adapter.
+    isFramework: prep.isFramework,
+    projectPath: projectPath,
   };
 
   channel.appendLine(`[Runtime] Starting debug session for ${prep.program}`);
@@ -419,25 +422,7 @@ export async function startRuntimeHotReloadSessionWithDebugger(
   return sessionStarted;
 }
 
-function resolveSharpDbgPath(): string | null {
-  if (!extensionPath) {
-    return null;
-  }
 
-  // Standardized location: tools/SharpDbg/ (used by both dev builds and .vsix).
-  const toolsPath = path.join(extensionPath, 'tools', 'SharpDbg', 'SharpDbg.Cli.exe');
-  if (fs.existsSync(toolsPath)) {
-    return toolsPath;
-  }
-
-  // Dev fallback: artifacts output from the submodule build.
-  const artifactPath = path.join(extensionPath, 'external', 'SharpDbg', 'artifacts', 'bin', 'SharpDbg.Cli', 'debug', 'SharpDbg.Cli.exe');
-  if (fs.existsSync(artifactPath)) {
-    return artifactPath;
-  }
-
-  return null;
-}
 
 export async function pushRuntimeXamlUpdate(
   projectPath: string,

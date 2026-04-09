@@ -43,6 +43,7 @@ import {
 } from './runtimeHotReload';
 import { registerToolbox } from './toolbox';
 import { startReviewPromptScheduler } from './reviewPrompt';
+import { resolveSharpDbgAdapter, promptInstallSharpDbg } from './sharpdbgAdapter';
 
 // Per-workspace-folder project selection, keyed by workspace folder path.
 const selectedProjects = new Map<string, string>();
@@ -477,14 +478,38 @@ export function activate(context: vscode.ExtensionContext): void {
   // ── SharpDbg Debug Adapter Provider ───────────────────────────────────
   context.subscriptions.push(
     vscode.debug.registerDebugAdapterDescriptorFactory('wpf-sharpdbg', {
-      createDebugAdapterDescriptor(_session: vscode.DebugSession) {
-        const sharpDbgPath = resolveSharpDbgExecutable(context);
-        if (!sharpDbgPath) {
-          throw new Error(
-            'SharpDbg debugger not found. Build it with the "Build SharpDbg" task first.'
-          );
+      async createDebugAdapterDescriptor(session: vscode.DebugSession) {
+        let isFramework = !!(session.configuration && session.configuration.isFramework);
+
+        // If the caller didn't explicitly mark the session, try to infer from the provided project/program.
+        if (!isFramework) {
+          const projPath = session.configuration?.projectPath ?? (session.configuration?.program ? findProjectForFile(session.configuration.program) : undefined);
+          if (projPath) {
+            try {
+              const parsed = parseProject(projPath);
+              if (parsed && parsed.targetFramework && /^net4/i.test(parsed.targetFramework)) {
+                isFramework = true;
+              }
+            } catch {
+              // ignore parse errors and fall back to default
+            }
+          }
         }
-        return new vscode.DebugAdapterExecutable(sharpDbgPath, ['--interpreter=vscode']);
+
+        const adapter = resolveSharpDbgAdapter(isFramework, session.configuration);
+        if (!adapter) {
+          // Offer to install SharpDbg from the Marketplace.
+          await promptInstallSharpDbg(context);
+          throw new Error('SharpDbg extension (lextudio.sharpdbg) is required for WPF debugging.');
+        }
+        const options: vscode.DebugAdapterExecutableOptions = {} as any;
+        if (adapter.cwd) {
+          options.cwd = adapter.cwd;
+        }
+        if (adapter.env) {
+          options.env = adapter.env;
+        }
+        return new vscode.DebugAdapterExecutable(adapter.command, adapter.args, options);
       },
     })
   );
@@ -1608,21 +1633,5 @@ async function recommendXamlStyler(context: vscode.ExtensionContext): Promise<vo
   }
 }
 
-function resolveSharpDbgExecutable(context: vscode.ExtensionContext): string | null {
-  const extPath = context.extensionPath;
 
-  // Standardized location: tools/SharpDbg/ (used by both dev builds and .vsix).
-  const toolsPath = path.join(extPath, 'tools', 'SharpDbg', 'SharpDbg.Cli.exe');
-  if (fs.existsSync(toolsPath)) {
-    return toolsPath;
-  }
-
-  // Dev fallback: artifacts output from the submodule build.
-  const artifactPath = path.join(extPath, 'external', 'SharpDbg', 'artifacts', 'bin', 'SharpDbg.Cli', 'debug', 'SharpDbg.Cli.exe');
-  if (fs.existsSync(artifactPath)) {
-    return artifactPath;
-  }
-
-  return null;
-}
 
