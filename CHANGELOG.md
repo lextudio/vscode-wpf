@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.9.12] - 2026-04-11
+
+- Improved WPF project detection.
+
 ## [0.9.11] - 2026-04-09
 
 - Added limited editing support for Windows targeting WPF projects on macOS/Linux.
