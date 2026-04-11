@@ -72,13 +72,32 @@ internal static class Program
             return 1;
         }
 
+        ProjectAnalysisResult result;
+
+        // Fast XML pre-check: if this is clearly NOT a WPF project (Uno, Avalonia, WinUI, etc.),
+        // short-circuit and return a non-WPF result without expensive MSBuild evaluation.
+        if (IsNotWpfProject(projectPathArg))
+        {
+            try
+            {
+                result = AnalyzeWithXml(projectPathArg);
+                result.MsBuildAvailable = false;
+                Console.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[WPF-PA] XML analysis failed: {ex.Message}");
+                return 2;
+            }
+        }
+
         // Register the MSBuild locator BEFORE any Microsoft.Build types are
         // loaded by the JIT.  MsBuildAnalyzer is in a separate class with
         // [MethodImpl(NoInlining)] so its types are not touched until the
         // locator has had a chance to wire up assembly resolution.
         var msbuildReady = MsBuildAnalyzer.TryRegisterLocator();
 
-        ProjectAnalysisResult result;
         if (msbuildReady)
         {
             try
@@ -112,6 +131,47 @@ internal static class Program
     private static bool ApplyEnableWindowsTargeting(string projectPath, out string message)
     {
         return MsBuildAnalyzer.ApplyEnableWindowsTargeting(projectPath, out message);
+    }
+
+    // -------------------------------------------------------------------------
+    // Fast XML pre-check: determine if a project is clearly NOT a WPF project
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Performs a fast XML pre-check to detect if a project is clearly NOT a WPF project.
+    /// Returns true if the project has PackageReferences for Uno, Avalonia, WinUI, etc.
+    /// This avoids expensive MSBuild evaluation for non-WPF projects.
+    /// </summary>
+    private static bool IsNotWpfProject(string projectPath)
+    {
+        try
+        {
+            var xml = File.ReadAllText(projectPath);
+
+            // Check for non-WPF frameworks (these are explicit opt-ins, so if present, NOT WPF)
+            if (xml.Contains("PackageReference", StringComparison.OrdinalIgnoreCase) &&
+                (xml.Contains("Uno.WinUI", StringComparison.OrdinalIgnoreCase) ||
+                 xml.Contains("Uno.UI", StringComparison.OrdinalIgnoreCase) ||
+                 xml.Contains("Avalonia", StringComparison.OrdinalIgnoreCase) ||
+                 xml.Contains("Microsoft.WindowsAppSDK", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true; // Has non-WPF package references
+            }
+
+            // Check for UWP targeting
+            if (xml.Contains("TargetPlatformIdentifier", StringComparison.OrdinalIgnoreCase) &&
+                xml.Contains("UAP", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return false;
+        }
+        catch
+        {
+            // If we cannot read/parse, assume it might be WPF and let full analysis handle it
+            return false;
+        }
     }
 
     // -------------------------------------------------------------------------

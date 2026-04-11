@@ -1269,6 +1269,7 @@ interface ProjectAnalysisResult {
   projectPath: string;
   windowsTargetingStatus?: string;
   enableWindowsTargeting?: boolean;
+  isWpfProject?: boolean;
 }
 
 /**
@@ -1343,15 +1344,26 @@ async function checkWindowsTargetingForWorkspace(context: vscode.ExtensionContex
     return;
   }
 
-  // Run the analyzer on all projects first to get a full picture before
-  // making any decisions about the language server.
+  if (!projects || projects.length === 0) {
+    console.log('WPF extension: no projects found; language server will not start.');
+    return;
+  }
+
+  // Run the analyzer on all projects. The analyzer determines which are WPF.
   const results = await Promise.all(
     projects.map(async p => ({ projectPath: p, result: await runProjectAnalyzer(analyzerExe, p) }))
   );
 
+  // Filter to WPF projects confirmed by the analyzer.
+  const wpfProjects = results.filter(r => r.result?.isWpfProject === true);
+  if (wpfProjects.length === 0) {
+    console.log('WPF extension: analyzer detected no WPF projects; language server will not start.');
+    return;
+  }
+
   // If any project is a legacy (non-SDK) .NET Framework WPF project the
   // language server cannot provide XAML tooling on macOS/Linux — bail out.
-  const legacyProjects = results.filter(r => r.result?.windowsTargetingStatus === 'legacy_wpf');
+  const legacyProjects = wpfProjects.filter(r => r.result?.windowsTargetingStatus === 'legacy_wpf');
   if (legacyProjects.length > 0) {
     void vscode.window.showWarningMessage(
       'Legacy .NET Framework WPF projects are not supported on macOS/Linux. ' +
@@ -1363,12 +1375,12 @@ async function checkWindowsTargetingForWorkspace(context: vscode.ExtensionContex
   // For SDK-style projects missing EnableWindowsTargeting, prompt the user
   // and apply the change — await each so the project file is updated before
   // the language server loads.
-  const requiredProjects = results.filter(r => r.result?.windowsTargetingStatus === 'required');
+  const requiredProjects = wpfProjects.filter(r => r.result?.windowsTargetingStatus === 'required');
   for (const { projectPath } of requiredProjects) {
     await vscode.commands.executeCommand('wpf.addEnableWindowsTargeting', projectPath);
   }
 
-  // All projects are either already compatible or have just been updated.
+  // All WPF projects are either already compatible or have just been updated.
   startLanguageServer(context);
 }
 
