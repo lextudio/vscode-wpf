@@ -775,6 +775,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.onDidChangeActiveTextEditor(editor => {
       const project = editor ? getCachedProject(editor.document.uri.fsPath) : null;
       updateStatusBar(editor, project ?? null);
+      void updateWpfXamlContext(editor, context);
     })
   );
 
@@ -784,7 +785,21 @@ export function activate(context: vscode.ExtensionContext): void {
     const editor = vscode.window.activeTextEditor;
     const project = editor ? getCachedProject(editor.document.uri.fsPath) : null;
     updateStatusBar(editor, project ?? null);
+    void updateWpfXamlContext(editor, context);
   }
+
+  // Invalidate the analyzer cache when project files change so that
+  // button visibility is re-evaluated on the next editor switch.
+  const projectWatcher = vscode.workspace.createFileSystemWatcher('**/*.{csproj,vbproj,fsproj}');
+  const invalidateAnalyzerCache = (uri: vscode.Uri) => {
+    analyzerCache.delete(uri.fsPath);
+    // Re-evaluate for the current editor in case it was affected.
+    void updateWpfXamlContext(vscode.window.activeTextEditor, context);
+  };
+  projectWatcher.onDidChange(invalidateAnalyzerCache);
+  projectWatcher.onDidCreate(invalidateAnalyzerCache);
+  projectWatcher.onDidDelete(invalidateAnalyzerCache);
+  context.subscriptions.push(projectWatcher);
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument(event => {
@@ -1267,6 +1282,7 @@ function isSupportedProjectPath(projectPath: string): boolean {
 
 interface ProjectAnalysisResult {
   projectPath: string;
+  isWpfProject?: boolean;
   windowsTargetingStatus?: string;
   enableWindowsTargeting?: boolean;
   isWpfProject?: boolean;
@@ -1496,6 +1512,84 @@ function getCachedProject(filePath: string): string | undefined {
 function getWorkspaceFolderKey(filePath: string): string {
   const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
   return folder?.uri.fsPath ?? path.dirname(filePath);
+}
+
+// Cache for wpf-project-analyzer results: project file path -> isWpfProject.
+const analyzerCache = new Map<string, boolean>();
+
+/**
+ * Walk up from a file's directory to the workspace root looking for the
+ * nearest project file (.csproj/.vbproj/.fsproj).  Unlike findProjectForFile,
+ * this does NOT filter by isWpfProject — it returns any project file.
+ */
+function findNearestProjectFile(filePath: string): string | null {
+  const workspaceFolders = vscode.workspace.workspaceFolders;
+  const roots = workspaceFolders ? workspaceFolders.map(f => f.uri.fsPath) : [];
+  const projectExtensions = ['.csproj', '.vbproj', '.fsproj'];
+
+  let dir = path.dirname(filePath);
+  while (true) {
+    try {
+      const entries = fs.readdirSync(dir);
+      for (const entry of entries) {
+        if (projectExtensions.includes(path.extname(entry).toLowerCase())) {
+          return path.join(dir, entry);
+        }
+      }
+    } catch {
+      break;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir || roots.some(r => dir === r)) {
+      break;
+    }
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Set the `wpf.isWpfXaml` context so that editor title buttons are hidden
+ * for non-WPF XAML files (e.g. WinUI 3, Avalonia, UWP, Uno).
+ *
+ * Uses the wpf-project-analyzer CLI tool for reliable MSBuild-based detection
+ * rather than simple heuristics.  Results are cached per project file path.
+ */
+async function updateWpfXamlContext(
+  editor: vscode.TextEditor | undefined,
+  extensionContext: vscode.ExtensionContext,
+): Promise<void> {
+  if (!editor ||
+      editor.document.uri.scheme !== 'file' ||
+      editor.document.languageId !== 'xaml') {
+    void vscode.commands.executeCommand('setContext', 'wpf.isWpfXaml', false);
+    return;
+  }
+
+  const projectFile = findNearestProjectFile(editor.document.uri.fsPath);
+  if (!projectFile) {
+    void vscode.commands.executeCommand('setContext', 'wpf.isWpfXaml', false);
+    return;
+  }
+
+  const cached = analyzerCache.get(projectFile);
+  if (cached !== undefined) {
+    void vscode.commands.executeCommand('setContext', 'wpf.isWpfXaml', cached);
+    return;
+  }
+
+  const analyzerExe = resolveAnalyzerExecutable(extensionContext);
+  if (!analyzerExe) {
+    // Analyzer binary not available — default to showing buttons so WPF users
+    // are not penalised.
+    void vscode.commands.executeCommand('setContext', 'wpf.isWpfXaml', true);
+    return;
+  }
+
+  const result = await runProjectAnalyzer(analyzerExe, projectFile);
+  const isWpf = result?.isWpfProject ?? false;
+  analyzerCache.set(projectFile, isWpf);
+  void vscode.commands.executeCommand('setContext', 'wpf.isWpfXaml', isWpf);
 }
 
 function getAutoBuildOnDesignerLaunch(configuration: vscode.WorkspaceConfiguration): boolean {

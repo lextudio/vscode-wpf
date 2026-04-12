@@ -158,12 +158,12 @@
       "editor/title": [
         {
           "command": "wpf.hotReload",
-          "when": "resourceExtname == .xaml && (isWindows || config.wpf.showHotReloadOnNonWindows)",
+          "when": "wpf.isWpfXaml && (isWindows || config.wpf.showHotReloadOnNonWindows)",
           "group": "navigation"
         },
         {
           "command": "wpf.launchDesigner",
-          "when": "resourceExtname == .xaml && (isWindows || config.wpf.showHotReloadOnNonWindows)",
+          "when": "wpf.isWpfXaml && (isWindows || config.wpf.showHotReloadOnNonWindows)",
           "group": "navigation@1"
         }
       ],
