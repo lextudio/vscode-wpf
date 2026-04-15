@@ -1,9 +1,9 @@
 # VS Code Tools for WPF
 
 [![Become a Sponsor](https://img.shields.io/badge/Become%20a%20Sponsor-lextudio-orange.svg?style=for-readme)](https://github.com/sponsors/lextudio)
-[![Stable Version](https://img.shields.io/visual-studio-marketplace/v/lextudio.vscode-wpf.svg?label=stable&color=)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
-[![Install Count](https://img.shields.io/visual-studio-marketplace/i/lextudio.vscode-wpf.svg)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
-[![Download Count](https://img.shields.io/visual-studio-marketplace/d/lextudio.vscode-wpf.svg)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
+[![Stable Version](https://vsmarketplacebadges.dev/version/lextudio.vscode-wpf.svg?label=stable)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
+[![Install Count](https://vsmarketplacebadges.dev/installs/lextudio.vscode-wpf.svg)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
+[![Download Count](https://vsmarketplacebadges.dev/downloads/lextudio.vscode-wpf.svg)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
 
 This is a VS Code extension targeting `.xaml` files for WPF projects. Different from many similar extensions, this one delivers you a full feature
 development experience for WPF with open source components
