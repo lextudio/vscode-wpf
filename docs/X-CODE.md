@@ -176,6 +176,126 @@ This enables:
 - **Go-to-definition**: Navigate to types and members referenced in the block
 - **Hover**: Type information and documentation
 
+## Language Service Diagnostics
+
+### Real-Time Error Reporting
+
+The language server now provides real-time diagnostic support for x:Code blocks, including compilation errors from C# code embedded in XAML files.
+
+### Diagnostic Reporting Flow
+
+```
+XAML File with x:Code
+    ↓
+[Parser] Extracts x:Code blocks
+    ↓
+[XamlDocumentModel.CodeBlocks] Stores code locations
+    ↓
+[WpfCodeEmitter] Generates C# with #line directives
+    ↓
+[Roslyn Compilation] Compiles full C# class
+    ↓
+[XamlCompilerAnalysisService.AddRoslynCompilationDiagnostics]
+    Extracts errors and maps back to XAML positions
+    ↓
+[Language Service Engine] Returns diagnostics with
+    correct line/column numbers in XAML file coordinates
+```
+
+### Source Mapping via #line Directives
+
+The `WpfCodeEmitter` emits x:Code blocks with `#line` directives for source location mapping:
+
+**Location**: `external/wxsg/src/XamlToCSharpGenerator.WPF/Emission/WpfCodeEmitter.cs` (lines 289-302)
+
+```csharp
+private static void EmitCodeBlocks(GraphEmitter emitter, XamlDocumentModel doc)
+{
+    var sb = emitter.Builder;
+    var i = emitter.MemberIndent;
+
+    foreach (var codeBlock in doc.CodeBlocks)
+    {
+        sb.AppendLine(i + "#line " + codeBlock.Line.ToString(CultureInfo.InvariantCulture));
+        sb.Append(codeBlock.RawCode.TrimStart('\r', '\n'));
+        sb.AppendLine();
+        sb.AppendLine(i + "#line default");
+        sb.AppendLine();
+    }
+}
+```
+
+This ensures that any Roslyn errors in the emitted code automatically map to the correct XAML line numbers.
+
+### Roslyn Diagnostic Extraction
+
+**Location**: `external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenerator.LanguageService/Analysis/XamlCompilerAnalysisService.cs`
+
+When `IncludeSemanticDiagnostics` is enabled, the analysis service extracts Roslyn compilation errors:
+
+```csharp
+private static void AddRoslynCompilationDiagnostics(
+    ImmutableArray<LanguageServiceDiagnostic>.Builder diagnostics,
+    Compilation? compilation)
+{
+    if (compilation is null) return;
+
+    try
+    {
+        var roslynDiagnostics = compilation.GetDiagnostics();
+        foreach (var diagnostic in roslynDiagnostics)
+        {
+            if (diagnostic.Severity != DiagnosticSeverity.Error) continue;
+            if (diagnostic.Location == Location.None) continue;
+
+            var lineSpan = diagnostic.Location.GetLineSpan();
+            var lsDiagnostic = new LanguageServiceDiagnostic(
+                Code: diagnostic.Id,
+                Message: diagnostic.GetMessage(),
+                Severity: LanguageServiceDiagnosticSeverity.Error,
+                Range: new SourceRange(
+                    Start: new SourcePosition(lineSpan.StartLinePosition.Line, lineSpan.StartLinePosition.Character),
+                    End: new SourcePosition(lineSpan.EndLinePosition.Line, lineSpan.EndLinePosition.Character)),
+                Source: "Roslyn");
+
+            diagnostics.Add(lsDiagnostic);
+        }
+    }
+    catch (Exception ex)
+    {
+        System.Diagnostics.Debug.WriteLine($"Failed to extract Roslyn diagnostics: {ex.Message}");
+    }
+}
+```
+
+### Example: Error Detection
+
+Given this XAML with x:Code:
+
+```xaml
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="MyApp.MainWindow">
+  
+  <x:Code>
+    <![CDATA[
+    private void OnClick()
+    {
+        UndefinedMethod();  // Line 8: Error reported here
+    }
+    ]]>
+  </x:Code>
+  
+</Window>
+```
+
+**Error Reported**:
+```
+[Roslyn] CS1061: 'MainWindow' does not contain a definition for 'UndefinedMethod'
+  Location: Line 8, Column 9
+  Severity: Error
+```
+
 ## Constraints & Validation
 
 ### Valid Only in Class-Backed XAML
