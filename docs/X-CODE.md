@@ -227,6 +227,48 @@ private static void EmitCodeBlocks(GraphEmitter emitter, XamlDocumentModel doc)
 
 This ensures that any Roslyn errors in the emitted code automatically map to the correct XAML line numbers.
 
+### Language Service Support
+
+All major language services are automatically available for x:Code blocks through the unified inline C# infrastructure:
+
+#### 1. **Completions** ✅
+**Service**: `XamlInlineCSharpCompletionService`  
+**How it works**: 
+- Detects x:Code elements via `XamlInlineCSharpNavigationService`
+- Provides C# member completions for variables, methods, types
+- Works for both implicit (context variables) and explicit receivers
+
+#### 2. **Hover** ✅
+**Service**: `XamlHoverService.TryGetInlineCSharpHover()`  
+**How it works**:
+- Resolves symbol at cursor position in x:Code
+- Returns type information and symbol documentation
+
+#### 3. **Go-to-Definition** ✅
+**Service**: `XamlDefinitionService`  
+**How it works**:
+- Uses `XamlInlineCSharpNavigationService.TryResolveNavigationTarget()`
+- Jumps to symbol declaration in code or external files
+
+#### 4. **Find References** ✅
+**Service**: `XamlReferenceService.GetReferences()`  
+**How it works**:
+- Finds all uses of a symbol across the project
+- Returns x:Code locations where symbol is referenced
+
+#### 5. **Semantic Tokens (Syntax Highlighting)** ✅
+**Service**: `XamlSemanticTokenService`  
+**How it works**:
+- Enumerates all inline C# contexts including x:Code
+- Provides token classifications: keyword, identifier, string, etc.
+- Enables proper syntax coloring for code blocks
+
+#### 6. **Rename/Refactoring** ✅
+**Service**: `XamlRenameService`  
+**How it works**:
+- Refactors identifiers across x:Code blocks and XAML
+- Roslyn renames handle code blocks automatically via generated C#
+
 ### Roslyn Diagnostic Extraction
 
 **Location**: `external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenerator.LanguageService/Analysis/XamlCompilerAnalysisService.cs`
@@ -384,10 +426,79 @@ Add `MainWindow.xaml` with `x:Code` example:
 </Window>
 ```
 
+## Complete Language Service Coverage
+
+### Architecture Overview
+
+x:Code blocks are seamlessly integrated into the language server through a unified architecture:
+
+```
+x:Code Element in XAML
+    ↓
+[XamlInlineCSharpNavigationService.IsInlineCSharpElement]
+    Recognizes x:Code with: localName="Code", namespace="http://schemas.microsoft.com/winfx/2006/xaml"
+    ↓
+[XamlInlineCSharpNavigationService.EnumerateContexts & TryResolveElementContentContext]
+    Extracts: raw C# code, line/column positions, scope element
+    ↓
+[All Language Services]
+    Use the context infrastructure to provide:
+    • Completions (XamlInlineCSharpCompletionService)
+    • Hover (XamlHoverService.TryGetInlineCSharpHover)
+    • Definitions (XamlDefinitionService + TryResolveNavigationTarget)
+    • References (XamlReferenceService.GetReferences)
+    • Semantic Tokens (XamlSemanticTokenService.EnumerateContexts)
+    • Rename (XamlRenameService via Roslyn rename)
+```
+
+### Service Integration Points
+
+| Service | Entry Point | x:Code Support |
+|---------|------------|-----------------|
+| **Completions** | `XamlCompletionService.GetCompletions()` line 38 | ✅ `XamlInlineCSharpCompletionService.TryGetCompletions()` |
+| **Hover** | `XamlHoverService.GetHover()` line 22 | ✅ `TryGetInlineCSharpHover()` |
+| **Definitions** | `XamlDefinitionService.GetDefinitions()` line 26 | ✅ `XamlInlineCSharpNavigationService.TryResolveNavigationTarget()` |
+| **References** | `XamlReferenceService.GetReferences()` line 129 | ✅ Handled via navigation service |
+| **Semantic Tokens** | `XamlSemanticTokenService.GetTokens()` line 54 | ✅ `XamlInlineCSharpNavigationService.EnumerateContexts()` |
+| **Rename** | `XamlRenameService.RenameAsync()` line 146 | ✅ `TryResolveRoslynRenameTargetAsync()` uses Roslyn rename |
+
+### What Each Service Provides for x:Code
+
+1. **Completions**: Type-aware suggestions while typing
+   - Member completions for class fields/methods
+   - Local variable completions in scope
+   - Lambda parameter suggestions
+
+2. **Hover**: Symbol documentation and type information
+   - Method signatures
+   - Property types
+   - XML documentation comments
+
+3. **Go-to-Definition**: Jump to declaration
+   - Navigate to class members
+   - Open external type definitions
+   - Jump to using/namespace declarations
+
+4. **Find References**: Locate all usages
+   - Find where a field/method is used
+   - Cross-reference x:Code blocks
+   - Integrate with XAML attribute references
+
+5. **Semantic Tokens**: Syntax highlighting
+   - Keywords (private, void, if, etc.)
+   - Identifiers (variable/method names)
+   - Strings and numbers
+   - Proper coloring for readability
+
+6. **Rename Refactoring**: Safe identifier renaming
+   - Rename field/method across all x:Code blocks
+   - Update XAML references automatically
+   - Preserve compiled code validity
+
 ## Future Enhancements
 
 1. **Conditional Compilation**: `xamlCompiled:Condition="..."` attribute support
 2. **Code Block Validation**: Real-time Roslyn analysis of C# syntax
-3. **Refactoring**: Support for rename/extract refactorings that touch `x:Code` content
-4. **Source Maps**: Link generated code back to original XAML lines for debugging
+3. **Extract Method**: Refactoring to extract code into separate methods
+4. **Code Snippets**: Provide code templates for common patterns
 5. **MAUI Support**: Extend to Avalonia/MAUI frameworks if needed
