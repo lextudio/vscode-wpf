@@ -1,9 +1,9 @@
 # VS Code Tools for WPF
 
-[![Become a Sponsor](https://img.shields.io/badge/Become%20a%20Sponsor-lextudio-orange.svg?style=for-readme)](https://github.com/sponsors/lextudio)
-[![Stable Version](https://vsmarketplacebadges.dev/version/lextudio.vscode-wpf.svg?label=stable)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
-[![Install Count](https://vsmarketplacebadges.dev/installs/lextudio.vscode-wpf.svg)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
-[![Download Count](https://vsmarketplacebadges.dev/downloads/lextudio.vscode-wpf.svg)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
+[![Become a Sponsor](https://img.shields.io/badge/Become%20a%20Sponsor-lextudio-orange.png?style=for-readme)](https://github.com/sponsors/lextudio)
+[![Stable Version](https://vsmarketplacebadges.dev/version/lextudio.vscode-wpf.png?label=stable)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
+[![Install Count](https://vsmarketplacebadges.dev/installs/lextudio.vscode-wpf.png)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
+[![Download Count](https://vsmarketplacebadges.dev/downloads/lextudio.vscode-wpf.png)](https://marketplace.visualstudio.com/items?itemName=lextudio.vscode-wpf)
 
 This is a VS Code extension targeting `.xaml` files for WPF projects. Different from many similar extensions, this one delivers you a full feature
 development experience for WPF with open source components
@@ -23,13 +23,18 @@ development experience for WPF with open source components
 
 ## Getting started
 
-### Recommended Companion Extension
+### Required Extensions
 
-For consistent formatting of your XAML files, we recommend optionally installing the community **XAML Styler** extension (`dabbinavo.xamlstyler`). The first time you use this extension you'll receive a prompt; you can also find it manually in the Extensions view by searching for "XAML Styler". This extension is optional—the WPF features work without it.
+These extensions are declared in `extensionDependencies` in `package.json` so VS Code can install them automatically when possible.
 
-### Companion Debugger (SharpDbg)
+- [ms-dotnettools.csharp](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csharp) - C# extension for VS Code, required for C# code-behind, XAML syntax highlighting, and related WPF project workflows.
+- [lextudio.sharpdbg](https://marketplace.visualstudio.com/items?itemName=lextudio.sharpdbg) - SharpDbg extension for VS Code, required for debugging WPF apps with Hot Reload from this extension.
 
-- Debugging WPF apps from this extension is performed by the separate SharpDbg debugger extension (`lextudio.sharpdbg`). `vscode-wpf` no longer bundles SharpDbg; instead the SharpDbg extension is declared in `extensionDependencies` and will be installed automatically when possible.
+### Recommended Extensions
+
+For consistent formatting of your XAML files, we recommend optionally installing the community **XAML Styler** extension (`dabbinavo.xamlstyler`). The first time you use this extension you'll receive a prompt; you can also find it manually in the Extensions view by searching for "XAML Styler".
+
+This extension is optional. The WPF features work without it.
 
 ### Using the Extension
 
@@ -43,12 +48,12 @@ For consistent formatting of your XAML files, we recommend optionally installing
 
 - The visual designer for WPF from SharpDevelop is stable.
 - The language server and XAML Hot Reload for WPF are under active development.
-- XAML Live Preview is investigated and planned for a future release.
+- XAML Live Preview is being investigated and may be included in a future release.
 - C# and VB.NET projects are primary focus, while F# project support is limited.
 
 XAML Hot Reload helper and visual designer currently target:
 
-- .NET Core / modern .NET WPF apps via `netcoreapp3.0` helper (supports .NET Core 3.1+ and newer)
+- .NET Core / modern .NET WPF apps via `netcoreapp3.0` helper (may support from .NET Core 3.1+ and newer, but .NET 6+ is recommended)
 - .NET Framework WPF apps via `net462` helper (including .NET Framework 4.6.2 and newer)
 
 ## License

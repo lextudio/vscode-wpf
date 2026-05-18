@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.9.14] - 2026-05-18
+
+- Added Microsoft C# extension as dependency to ensure XAML syntax highlighting.
+
 ## [0.9.13] - 2026-04-11
 
 - Improved WPF project detection.
