@@ -1286,7 +1286,6 @@ interface ProjectAnalysisResult {
   isWpfProject?: boolean;
   windowsTargetingStatus?: string;
   enableWindowsTargeting?: boolean;
-  isWpfProject?: boolean;
 }
 
 /**
