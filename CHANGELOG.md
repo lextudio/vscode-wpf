@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.9.15] - 2026-05-18
+
+- Improved Homebrew installed .NET SDK patch.
+
 ## [0.9.14] - 2026-05-18
 
 - Added Microsoft C# extension as dependency to ensure XAML syntax highlighting.

@@ -176,23 +176,25 @@ function resolveDotnetHostPath(dotnetPath: string): string | null {
 }
 
 function resolveSdkDotnetHostPath(preferredDotnetPath: string): string | null {
-  const candidates = new Set<string>();
-  const preferred = resolveDotnetHostPath(preferredDotnetPath);
-  if (preferred) {
-    candidates.add(preferred);
-  }
-
+  // Prefer standard system dotnet installations (Homebrew, /usr/local/share/dotnet, etc.)
+  // over the ms-dotnettools acquired dotnet. The system dotnet was used for `dotnet restore`,
+  // so its minor-version selection of framework packs (e.g. net9.0 → 9.0.15) matches the
+  // NuGet cache. The ms-dotnettools SDK may bundle a different minor version (e.g. 9.0.14)
+  // that is missing from the NuGet cache, causing EnableWindowsTargeting to fail to resolve
+  // PresentationCore/PresentationFramework (MC6000).
   for (const candidate of getStandardDotnetHostCandidates()) {
-    candidates.add(candidate);
-  }
-
-  for (const candidate of candidates) {
     if (hasDotnetSdk(candidate)) {
       return candidate;
     }
   }
 
-  return preferred;
+  // Fall back to the preferred path (ms-dotnettools acquired or user-configured).
+  const preferred = resolveDotnetHostPath(preferredDotnetPath);
+  if (preferred && hasDotnetSdk(preferred)) {
+    return preferred;
+  }
+
+  return preferred ?? null;
 }
 
 function resolveDotnetFromPath(): string | null {
