@@ -65,9 +65,11 @@ internal static class MsBuildAnalyzer
         var useWinForms = GetBoolProperty(msbuildProject, "UseWindowsForms");
         var outputType = GetProperty(msbuildProject, "OutputType");
 
-        // Read the user's actual EnableWindowsTargeting value (not our injected one).
-        // We need to check the raw XML for this since we injected it as a global property.
-        var enableWindowsTargeting = HasPropertyInProjectOrImports(msbuildProject, "EnableWindowsTargeting");
+        // Read the user's actual EnableWindowsTargeting value with a separate
+        // MSBuild evaluation that does not inject the global property above.
+        // The injected evaluation is only for resolving Windows-targeted WPF
+        // projects on non-Windows hosts.
+        var enableWindowsTargeting = EvaluateUserBoolProperty(projectPath, "EnableWindowsTargeting");
 
         var tfmList = ParseTfmList(targetFramework, targetFrameworks);
         var isLegacy = !isSdkStyle && !string.IsNullOrEmpty(targetFrameworkVersion);
@@ -175,20 +177,23 @@ internal static class MsBuildAnalyzer
     }
 
     /// <summary>
-    /// Checks whether a property is explicitly set in the project file or any
-    /// of its imports (Directory.Build.props, etc.) — not just injected via
-    /// global properties.
+    /// Evaluates a property through MSBuild without analyzer-injected global
+    /// properties, so imported props, conditions, environment properties, and
+    /// other normal MSBuild property mechanisms are honored.
     /// </summary>
-    private static bool HasPropertyInProjectOrImports(Project project, string propertyName)
+    private static bool EvaluateUserBoolProperty(string projectPath, string propertyName)
     {
-        var prop = project.GetProperty(propertyName);
-        if (prop is null || prop.IsGlobalProperty || prop.IsEnvironmentProperty || prop.IsReservedProperty)
+        try
         {
+            using var collection = new ProjectCollection();
+            var project = collection.LoadProject(projectPath, globalProperties: null, toolsVersion: null);
+            return GetBoolProperty(project, propertyName);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WPF-PA] MSBuild user property evaluation failed for {propertyName}: {ex.Message}");
             return false;
         }
-
-        // The property exists and was set by the project or an import.
-        return string.Equals(prop.EvaluatedValue, "true", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
