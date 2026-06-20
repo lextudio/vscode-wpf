@@ -70,6 +70,16 @@ Both fail if compilation is Tier-1 (no user types).
 
 ## Build
 
+### Prerequisites
+
+Initialize submodules before building designer or language server components:
+
+```bash
+git submodule update --init --recursive
+```
+
+### Local development
+
 ```bash
 # Build WPF language server
 dotnet build src/XamlLanguageServer.Wpf/XamlLanguageServer.Wpf.csproj
@@ -80,3 +90,49 @@ dotnet build external/wxsg/external/XamlToCSharpGenerator/src/XamlToCSharpGenera
 # Run tests
 dotnet test src/XamlLanguageServer.Wpf.Tests/
 ```
+
+### Release packaging
+
+Platform-specific VSIX packages are built via [`dist.all.ps1`](dist.all.ps1). Architecture is handled with a hybrid model, both values derived automatically from `-Target`:
+
+- **RID** (e.g. `win-x64`) controls the .NET Core apphost bitness — modern `XamlDesigner.exe`, `wpf-xaml-ls.exe`, `wpf-project-analyzer`. This is what makes cross-publishing work.
+- **`PlatformTarget`** (e.g. `x64`/`ARM64`) controls the net481 (.NET Framework) designer, where a RID is not meaningful.
+- The `WpfHotReload.Runtime` helper DLLs stay AnyCPU (no override) — they are injected into the user's process and must load on any arch.
+
+```powershell
+# Full Windows x64 release package (designer, hot reload, language server, analyzer)
+pwsh ./dist.all.ps1 -Target win32-x64
+
+# Windows ARM64
+pwsh ./dist.all.ps1 -Target win32-arm64
+
+# Generic local dev package (no --target; uses host architecture, no R2R)
+pwsh ./dist.all.ps1
+```
+
+Non-Windows targets (`darwin-*`, `linux-*`) ship the TypeScript extension and cross-platform project analyzer only; Windows-only tools (designer, hot reload, language server) are omitted.
+
+#### Local cross-publishing (before CI `VSCE_PAT` is configured)
+
+Because the RID is derived from `-Target`, you can build any platform's VSIX from any host machine (e.g. produce a correct x64 package on an ARM laptop). Build every target in one command with `-All`:
+
+```powershell
+# Build all six platform VSIXes locally
+pwsh ./dist.all.ps1 -All
+
+# Build AND publish all six (authenticate first with `npx @vscode/vsce login <publisher>`,
+# or set the VSCE_PAT environment variable)
+pwsh ./dist.all.ps1 -All -Publish
+```
+
+`-All` and `-Target` are mutually exclusive. R2R is enabled only when a RID is present (so the generic no-target build skips it).
+
+### CI
+
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every push/PR to `main`:
+
+1. **test** — `dotnet test` on `windows-latest`
+2. **package** — matrix builds six platform VSIXes (`win32-x64`, `win32-arm64`, `darwin-x64`, `darwin-arm64`, `linux-x64`, `linux-arm64`)
+3. **publish** — on version tags (`v*`), publishes all VSIX artifacts to the Marketplace (requires `VSCE_PAT` secret)
+
+All matrix legs must succeed before a platform-specific release is published; Marketplace routes each target to the matching VS Code host.

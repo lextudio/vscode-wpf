@@ -13,8 +13,10 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
-    <!-- Pre-compile hot paths to native code at publish time for shipped binaries. -->
-    <PublishReadyToRun>true</PublishReadyToRun>
+    <!-- Pre-compile hot paths to native code at publish time for shipped binaries.
+         R2R (crossgen) requires a RuntimeIdentifier, so only enable it when one is set. -->
+    <PublishReadyToRun Condition="'$(RuntimeIdentifier)' != ''">true</PublishReadyToRun>
+    <PublishReadyToRun Condition="'$(RuntimeIdentifier)' == ''">false</PublishReadyToRun>
   </PropertyGroup>
 
   <ItemGroup>

@@ -22,14 +22,25 @@
     installed .NET Windows SDK.
     Override only when pinning to a specific version, e.g. net10.0-windows.
 
+.PARAMETER RuntimeIdentifier
+    Optional RID (e.g. win-x64, win-arm64) for the modern .NET designer apphost.
+    Enables local cross-publishing (e.g. building win-x64 on an ARM host).
+
+.PARAMETER PlatformTarget
+    Optional CPU architecture (x64, ARM64) for the net481 (.NET Framework) designer,
+    where a RID is not meaningful.
+
 .EXAMPLE
     .\scripts\build-designer.ps1
     .\scripts\build-designer.ps1 -TargetFramework net10.0-windows
     .\scripts\build-designer.ps1 -Configuration Debug
+    .\scripts\build-designer.ps1 -RuntimeIdentifier win-x64 -PlatformTarget x64
 #>
 param(
-    [string]$Configuration   = "Release",
-    [string]$TargetFramework = "",
+    [string]$Configuration      = "Release",
+    [string]$TargetFramework    = "",
+    [string]$RuntimeIdentifier  = "",
+    [string]$PlatformTarget     = "",
     [switch]$OnlyModern,
     [switch]$OnlyLegacy
 )
@@ -42,7 +53,6 @@ $SubmoduleRoot   = Join-Path $RepoRoot "external\WpfDesigner"
 $OutputDir       = Join-Path $RepoRoot "tools\XamlDesigner"
 $TfmFile         = Join-Path $OutputDir "designer.tfm"
 $TempProps       = Join-Path $SubmoduleRoot "Directory.Build.props"
-$BuiltOutputDir  = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$TargetFramework"
 
 # Verify submodule is initialised
 if (-not (Test-Path $SubmoduleCsproj)) {
@@ -128,6 +138,12 @@ Write-Host "  Project       : $SubmoduleCsproj"
 Write-Host "  Output        : $OutputDir"
 Write-Host "  Configuration : $Configuration"
 Write-Host "  Framework     : $TargetFramework"
+if ($RuntimeIdentifier) {
+    Write-Host "  RID (modern)  : $RuntimeIdentifier"
+}
+if ($PlatformTarget) {
+    Write-Host "  PlatformTarget: $PlatformTarget (net481)"
+}
 Write-Host ""
 
 # Decide which build passes to run based on flags. If no flags provided,
@@ -155,7 +171,32 @@ if (-not (Test-Path $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir | Out-Null
 }
 
-$BuiltOutputDir  = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$TargetFramework"
+function Get-DesignerBuiltOutputDir {
+    param(
+        [string]$Tfm,
+        [string]$Rid = ''
+    )
+
+    $dir = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$Tfm"
+    if ($Rid) {
+        $dir = Join-Path $dir $Rid
+    }
+    return $dir
+}
+
+# Modern .NET designer: arch via RID (controls the native apphost bitness).
+function Get-ModernArchArgs {
+    if ($RuntimeIdentifier) { return @('-r', $RuntimeIdentifier) }
+    return @()
+}
+
+# net481 designer: arch via PlatformTarget (Framework has no RID).
+function Get-LegacyArchArgs {
+    if ($PlatformTarget) { return @("-p:PlatformTarget=$PlatformTarget") }
+    return @()
+}
+
+$BuiltOutputDir = Get-DesignerBuiltOutputDir -Tfm $TargetFramework -Rid $RuntimeIdentifier
 
 if ($doModern) {
     Write-Host "  Using committed external/WpfDesigner/Directory.Build.props; passing XamlDesignerDefaultTargetFramework" -ForegroundColor DarkGray
@@ -164,17 +205,30 @@ if ($doModern) {
 
     Write-Host ""
     Write-Host "Running: dotnet restore ..." -ForegroundColor Yellow
-    & dotnet restore "$SubmoduleCsproj" --nologo -p:UseSharedCompilation=false "-p:XamlDesignerDefaultTargetFramework=$TargetFramework" "-p:EnableWindowsTargeting=true"
+    $restoreArgs = @(
+        'restore', "$SubmoduleCsproj",
+        '--nologo',
+        '-p:UseSharedCompilation=false',
+        "-p:XamlDesignerDefaultTargetFramework=$TargetFramework",
+        '-p:EnableWindowsTargeting=true'
+    )
+    $restoreArgs += Get-ModernArchArgs
+    & dotnet @restoreArgs
     if ($LASTEXITCODE -ne 0) { Write-Error "Restore failed with exit code $LASTEXITCODE."; exit $LASTEXITCODE }
 
     Write-Host "Running: dotnet build ..." -ForegroundColor Yellow
-    & dotnet build "$SubmoduleCsproj" `
-        --configuration $Configuration `
-        --nologo `
-        --no-restore `
-        -maxcpucount:1 `
-        -p:UseSharedCompilation=false `
-        "-p:XamlDesignerDefaultTargetFramework=$TargetFramework" "-p:EnableWindowsTargeting=true"
+    $buildArgs = @(
+        'build', "$SubmoduleCsproj",
+        '--configuration', $Configuration,
+        '--nologo',
+        '--no-restore',
+        '-maxcpucount:1',
+        '-p:UseSharedCompilation=false',
+        "-p:XamlDesignerDefaultTargetFramework=$TargetFramework",
+        '-p:EnableWindowsTargeting=true'
+    )
+    $buildArgs += Get-ModernArchArgs
+    & dotnet @buildArgs
     if ($LASTEXITCODE -ne 0) { Write-Error "Build failed with exit code $LASTEXITCODE."; exit $LASTEXITCODE }
 
     # Record the TFM so the extension can check compatibility at launch time
@@ -209,7 +263,7 @@ if ($doModern) {
 # ---------------------------------------------------------------------------
 $LegacyTfm       = "net481"
 $LegacyOutputDir = Join-Path $RepoRoot "tools\XamlDesignerLegacy"
-$LegacyBuiltDir  = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$LegacyTfm"
+$LegacyBuiltDir  = Get-DesignerBuiltOutputDir -Tfm $LegacyTfm
 
 Write-Host ""
 Write-Host "=== Building .NET Framework Designer ($LegacyTfm) ===" -ForegroundColor Cyan
@@ -222,16 +276,29 @@ Write-Host "  Using committed external/WpfDesigner/Directory.Build.props; passin
 
 $legacyOk = $false
 try {
-    & dotnet restore "$SubmoduleCsproj" --nologo -p:UseSharedCompilation=false "-p:XamlDesignerDefaultTargetFramework=$LegacyTfm" "-p:EnableWindowsTargeting=true" 2>&1 | Out-Null
+    $legacyRestoreArgs = @(
+        'restore', "$SubmoduleCsproj",
+        '--nologo',
+        '-p:UseSharedCompilation=false',
+        "-p:XamlDesignerDefaultTargetFramework=$LegacyTfm",
+        '-p:EnableWindowsTargeting=true'
+    )
+    $legacyRestoreArgs += Get-LegacyArchArgs
+    & dotnet @legacyRestoreArgs 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Restore failed" }
 
-    & dotnet build "$SubmoduleCsproj" `
-        --configuration $Configuration `
-        --nologo `
-        --no-restore `
-        -maxcpucount:1 `
-        -p:UseSharedCompilation=false `
-        "-p:XamlDesignerDefaultTargetFramework=$LegacyTfm" "-p:EnableWindowsTargeting=true" 2>&1 | Out-Null
+    $legacyBuildArgs = @(
+        'build', "$SubmoduleCsproj",
+        '--configuration', $Configuration,
+        '--nologo',
+        '--no-restore',
+        '-maxcpucount:1',
+        '-p:UseSharedCompilation=false',
+        "-p:XamlDesignerDefaultTargetFramework=$LegacyTfm",
+        '-p:EnableWindowsTargeting=true'
+    )
+    $legacyBuildArgs += Get-LegacyArchArgs
+    & dotnet @legacyBuildArgs 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 
     if (-not (Test-Path $LegacyBuiltDir)) { throw "Output directory not found" }
