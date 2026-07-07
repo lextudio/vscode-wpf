@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.9.17] - 2026-07-07
+
+- Improved packaging script.
+
 ## [0.9.16] - 2026-07-07
 
 - Fixed language server packaging issue.

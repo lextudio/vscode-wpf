@@ -16,6 +16,9 @@ $targets = @()
 Write-Host 'Removing old .vsix files from destination folder...'
 Get-ChildItem -Path $here -Filter *.vsix -File | Remove-Item -Force
 
+Write-Host 'Removing stale tools/ output (avoids shipping binaries left over from a previous build)...'
+Remove-Item -Path (Join-Path $here 'tools') -Recurse -Force -ErrorAction SilentlyContinue
+
 Write-Host 'Syncing package.json version from latest git tag (if present)...'
 .\update-version.ps1
 
