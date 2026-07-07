@@ -8,13 +8,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>wpf-xaml-ls</AssemblyName>
     <RootNamespace>XamlLanguageServer.Wpf</RootNamespace>
-    <!-- Keep Debug inner-loop fast: no R2R during VS Code debugging/local iteration. -->
-    <PublishReadyToRun>false</PublishReadyToRun>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
-    <!-- Pre-compile hot paths to native code at publish time for shipped binaries. -->
-    <PublishReadyToRun>true</PublishReadyToRun>
+    <!-- We ship a single framework-dependent, portable (no RID) build so it runs on
+         any CPU architecture via `dotnet wpf-xaml-ls.dll`. R2R crossgens native code
+         for whatever RID dotnet publish defaults to (the build machine's arch) when
+         none is specified, which silently breaks on other architectures — so it must
+         stay off unless a RID is explicitly supplied. -->
+    <PublishReadyToRun Condition="'$(RuntimeIdentifier)' == ''">false</PublishReadyToRun>
   </PropertyGroup>
 
   <ItemGroup>

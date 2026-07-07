@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.9.16] - 2026-07-07
+
+- Fixed language server packaging issue.
+
 ## [0.9.15] - 2026-05-18
 
 - Improved Homebrew installed .NET SDK patch.
