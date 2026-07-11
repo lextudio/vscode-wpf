@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as net from 'net';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { repoRoot } from './paths';
 
 type RuntimeSessionInfo = {
   projectPath: string;
@@ -22,7 +23,6 @@ type RuntimePushResult = {
   degraded: boolean;
 };
 
-const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const sampleProjectPath = path.join(repoRoot, 'sample', 'net6.0', 'sample.csproj');
 const mainWindowPath = path.join(repoRoot, 'sample', 'net6.0', 'MainWindow.xaml');
 const samplePanePath = path.join(repoRoot, 'sample', 'net6.0', 'SamplePane.xaml');

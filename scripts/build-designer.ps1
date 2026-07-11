@@ -4,23 +4,14 @@
 
 .DESCRIPTION
     Compiles external/WpfDesigner/XamlDesigner/Demo.XamlDesigner.csproj and
-    stages the modern designer output in tools/XamlDesigner/ and the
-    .NET Framework 4.8.1 output in tools/XamlDesignerLegacy/.
-
-    To override the TargetFramework for all projects in the submodule without
-    modifying any source file, the script temporarily writes a
-    Directory.Build.props in external/WpfDesigner/ and removes it when done.
-    MSBuild searches for Directory.Build.props upward from each project file,
-    so every project in the submodule inherits the override consistently during
-    both restore and build.
+    stages the LibreWPF-based designer output in tools/XamlDesigner/.
 
 .PARAMETER Configuration
     MSBuild configuration to use (default: Release).
 
 .PARAMETER TargetFramework
-    Target framework to compile for. Leave empty to auto-detect the highest
-    installed .NET Windows SDK.
-    Override only when pinning to a specific version, e.g. net10.0-windows.
+    Target framework to compile for. Defaults to net10.0-windows, matching
+    the local LibreWPF.Sdk/11.0.0-dev packages.
 
 .EXAMPLE
     .\scripts\build-designer.ps1
@@ -30,6 +21,7 @@
 param(
     [string]$Configuration   = "Release",
     [string]$TargetFramework = "",
+    [string]$DotnetPath      = "",
     [switch]$OnlyModern,
     [switch]$OnlyLegacy
 )
@@ -41,7 +33,6 @@ $SubmoduleCsproj = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\Demo.X
 $SubmoduleRoot   = Join-Path $RepoRoot "external\WpfDesigner"
 $OutputDir       = Join-Path $RepoRoot "tools\XamlDesigner"
 $TfmFile         = Join-Path $OutputDir "designer.tfm"
-$TempProps       = Join-Path $SubmoduleRoot "Directory.Build.props"
 $BuiltOutputDir  = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$TargetFramework"
 
 # Verify submodule is initialised
@@ -56,10 +47,39 @@ Initialise it first:
     exit 1
 }
 
-# Ensure dotnet CLI is available
-if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
-    Write-Error "dotnet CLI not found on PATH.  Install the .NET SDK from https://dot.net"
+if (-not $DotnetPath -or -not (Test-Path $DotnetPath)) {
+    $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+    if ($dotnetCommand) {
+        $DotnetPath = $dotnetCommand.Source
+    }
+}
+
+if (-not (Test-Path $DotnetPath)) {
+    Write-Error "dotnet CLI not found. Install .NET 10 SDK or pass -DotnetPath."
     exit 1
+}
+
+function Setup-DotnetEnv {
+    param([string]$Dotnet)
+
+    $dotnetBinDir = Split-Path -Parent $Dotnet
+    if (Test-Path (Join-Path $dotnetBinDir "sdk")) {
+        $env:DOTNET_ROOT = $dotnetBinDir
+    } elseif (Test-Path (Join-Path $dotnetBinDir "..\libexec\sdk")) {
+        $env:DOTNET_ROOT = (Resolve-Path (Join-Path $dotnetBinDir "..\libexec")).Path
+    } else {
+        return
+    }
+
+    $env:DOTNET_HOST_PATH = $Dotnet
+    $sdkDir = Get-ChildItem -Path (Join-Path $env:DOTNET_ROOT "sdk") -Directory | Sort-Object Name | Select-Object -Last 1
+    if ($sdkDir) {
+        $env:MSBuildSDKsPath = Join-Path $sdkDir.FullName "Sdks"
+        $env:MSBuildExtensionsPath = $sdkDir.FullName
+        $env:MSBUILDADDITIONALSDKRESOLVERSFOLDER_NET = Join-Path $sdkDir.FullName "SdkResolvers"
+        $env:MSBUILD_NUGET_PATH = $sdkDir.FullName
+        $env:MSBuildEnableWorkloadResolver = "false"
+    }
 }
 
 function Stop-ConflictingDesignerProcesses {
@@ -69,9 +89,13 @@ function Stop-ConflictingDesignerProcesses {
     )
 
     try {
-        & dotnet build-server shutdown | Out-Null
+        & $DotnetPath build-server shutdown | Out-Null
     } catch {
         # Best effort only.
+    }
+
+    if (-not $IsWindows) {
+        return
     }
 
     $lockingNames = @(
@@ -106,21 +130,14 @@ function Stop-ConflictingDesignerProcesses {
     }
 }
 
- # Auto-detect installed .NET SDK when TargetFramework not specified.
- # Prefer net10.0-windows when available to avoid selecting preview TFMs like net11.
 if (-not $TargetFramework) {
-    $sdkList = & dotnet --list-sdks 2>$null
-    $majors = $sdkList | ForEach-Object { if ($_ -match '^(\d+)\.') { [int]$Matches[1] } } | Select-Object -Unique
-    if ($majors -contains 10) {
-        $TargetFramework = 'net10.0-windows'
-    } else {
-        $highest = $majors | Where-Object { $_ -ge 5 } | Sort-Object -Descending | Select-Object -First 1
-        $TargetFramework = if ($highest) { "net${highest}.0-windows" } else { 'net10.0-windows' }
-    }
-    Write-Host "  TargetFramework : $TargetFramework (auto-detected)" -ForegroundColor DarkGray
+    $TargetFramework = 'net10.0-windows'
+    Write-Host "  TargetFramework : $TargetFramework (default for LibreWPF)" -ForegroundColor DarkGray
 } else {
     Write-Host "  TargetFramework : $TargetFramework (explicit)" -ForegroundColor DarkGray
 }
+
+Setup-DotnetEnv $DotnetPath
 
 Write-Host ""
 Write-Host "=== WPF Designer Tools Build ===" -ForegroundColor Cyan
@@ -128,16 +145,13 @@ Write-Host "  Project       : $SubmoduleCsproj"
 Write-Host "  Output        : $OutputDir"
 Write-Host "  Configuration : $Configuration"
 Write-Host "  Framework     : $TargetFramework"
+Write-Host "  Dotnet        : $DotnetPath"
 Write-Host ""
 
 # Decide which build passes to run based on flags. If no flags provided,
 # perform both modern and legacy builds. If -OnlyModern is supplied, only
 # build the modern TFM. If -OnlyLegacy is supplied, only build net481.
-if ($OnlyModern -and $OnlyLegacy) {
-    $doModern = $true
-    $doLegacy = $true
-}
-elseif ($OnlyModern) {
+if ($OnlyModern) {
     $doModern = $true
     $doLegacy = $false
 }
@@ -147,7 +161,7 @@ elseif ($OnlyLegacy) {
 }
 else {
     $doModern = $true
-    $doLegacy = $true
+    $doLegacy = $IsWindows
 }
 
 # Create output directory if needed
@@ -158,23 +172,23 @@ if (-not (Test-Path $OutputDir)) {
 $BuiltOutputDir  = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$TargetFramework"
 
 if ($doModern) {
-    Write-Host "  Using committed external/WpfDesigner/Directory.Build.props; passing XamlDesignerDefaultTargetFramework" -ForegroundColor DarkGray
+    Write-Host "  Using LibreWPF.Sdk/11.0.0-dev from the local LibreWPF package feed" -ForegroundColor DarkGray
 
     Stop-ConflictingDesignerProcesses -RepoRootPath $RepoRoot -BuildOutputPath $OutputDir
 
     Write-Host ""
     Write-Host "Running: dotnet restore ..." -ForegroundColor Yellow
-    & dotnet restore "$SubmoduleCsproj" --nologo -p:UseSharedCompilation=false "-p:XamlDesignerDefaultTargetFramework=$TargetFramework" "-p:EnableWindowsTargeting=true"
+    & $DotnetPath restore "$SubmoduleCsproj" --nologo -p:UseSharedCompilation=false "-p:XamlDesignerDefaultTargetFramework=$TargetFramework"
     if ($LASTEXITCODE -ne 0) { Write-Error "Restore failed with exit code $LASTEXITCODE."; exit $LASTEXITCODE }
 
     Write-Host "Running: dotnet build ..." -ForegroundColor Yellow
-    & dotnet build "$SubmoduleCsproj" `
+    & $DotnetPath build "$SubmoduleCsproj" `
         --configuration $Configuration `
         --nologo `
         --no-restore `
         -maxcpucount:1 `
         -p:UseSharedCompilation=false `
-        "-p:XamlDesignerDefaultTargetFramework=$TargetFramework" "-p:EnableWindowsTargeting=true"
+        "-p:XamlDesignerDefaultTargetFramework=$TargetFramework"
     if ($LASTEXITCODE -ne 0) { Write-Error "Build failed with exit code $LASTEXITCODE."; exit $LASTEXITCODE }
 
     # Record the TFM so the extension can check compatibility at launch time
@@ -203,9 +217,7 @@ if ($doModern) {
 }
 
 # ---------------------------------------------------------------------------
-# Required: build a .NET Framework 4.8.1 variant for net4x project support.
-# This allows the designer to load .NET Framework user assemblies.
-# This is mandatory for packaging and must succeed.
+# Optional Windows-only legacy designer for net4x project support.
 # ---------------------------------------------------------------------------
 $LegacyTfm       = "net481"
 $LegacyOutputDir = Join-Path $RepoRoot "tools\XamlDesignerLegacy"
@@ -213,6 +225,11 @@ $LegacyBuiltDir  = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$C
 
 Write-Host ""
 Write-Host "=== Building .NET Framework Designer ($LegacyTfm) ===" -ForegroundColor Cyan
+
+if (-not $doLegacy) {
+    Write-Host "Skipping $LegacyTfm designer on this platform." -ForegroundColor DarkGray
+    exit 0
+}
 
 if (-not (Test-Path $LegacyOutputDir)) {
     New-Item -ItemType Directory -Path $LegacyOutputDir | Out-Null

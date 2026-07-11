@@ -2,8 +2,8 @@ import * as assert from 'assert';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import * as net from 'net';
+import { repoRoot } from './paths';
 
-const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const frameworkProjectPath = path.join(repoRoot, 'sample', 'net462', 'sample.csproj');
 const mainWindowPath = path.join(repoRoot, 'sample', 'net6.0', 'MainWindow.xaml');
 

@@ -18,6 +18,7 @@ import {
   buildDesignerTools,
   checkDesignerCompatibility,
   getDesignerExecutable,
+  getDesignerSessionInfo,
   hasRunningDesignerSession,
   launchDesigner,
   pushLiveXamlUpdate,
@@ -723,6 +724,27 @@ export function activate(context: vscode.ExtensionContext): void {
         pipeName: info.pipeName ?? null,
         pid: info.childProcess.pid ?? null,
       };
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf._test.getDesignerSessionInfo', async (projectPath?: string) => {
+      if (!projectPath) {
+        return null;
+      }
+
+      return getDesignerSessionInfo(projectPath);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wpf._test.stopDesignerSession', async (projectPath?: string) => {
+      if (!projectPath) {
+        return false;
+      }
+
+      restartDesignerSession(projectPath);
+      return true;
     })
   );
 

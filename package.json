@@ -2,7 +2,7 @@
   "name": "vscode-wpf",
   "displayName": "VS Code Tools for WPF",
   "description": "VS Code extension for WPF (.xaml) files with visual designer integration.",
-  "version": "0.9.14",
+  "version": "0.9.17",
   "publisher": "lextudio",
   "engines": {
     "vscode": "^1.101.0"
@@ -51,7 +51,8 @@
     "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js --sourcemap",
     "watch:build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js --sourcemap --watch",
     "test:integration:hotreload": "npm run build && npm run compile:tests && node ./test/runTest.js",
-    "build-designer": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-designer.ps1",
+    "test:integration:designer": "npm run build && npm run compile:tests && node ./test/runDesignerTest.js",
+    "build-designer": "pwsh -NoProfile -File ./scripts/build-designer.ps1",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./dist.windows.ps1",
     "package:publish:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./dist.windows.ps1 -Publish",
     "publish:marketplace": "powershell -NoProfile -ExecutionPolicy Bypass -File ./publish.ps1",
@@ -240,6 +241,11 @@
           "default": "dotnet",
           "description": "Path to the dotnet CLI executable used for building projects."
         },
+        "wpf.libreWpfDotnetPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the dotnet host used for building the LibreWPF-based cross-platform designer. Leave empty to use wpf.dotnetPath."
+        },
         "wpf.autoBuildOnDesignerLaunch": {
           "type": "boolean",
           "default": true,
@@ -289,8 +295,8 @@
         },
         "wpf.showHotReloadOnNonWindows": {
           "type": "boolean",
-          "default": false,
-          "description": "Show the Hot Reload and Launch Designer editor title buttons on macOS and Linux. Default is false to avoid exposing Windows-only functionality unless explicitly enabled."
+          "default": true,
+          "description": "Show the Hot Reload and Launch Designer editor title buttons on macOS and Linux."
         }
       }
     }

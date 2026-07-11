@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as net from 'net';
+import * as os from 'os';
 import * as path from 'path';
 import { parseProject } from './projectDiscovery';
 import { getSharpDbgApi } from './sharpdbgAdapter';
@@ -15,6 +16,7 @@ export interface BuildResult {
 const DESIGNER_TFM_FILE = 'designer.tfm';
 const MODERN_DESIGNER_DIR = 'XamlDesigner';
 const LEGACY_DESIGNER_DIR = 'XamlDesignerLegacy';
+const DEFAULT_LIBREWPF_TFM = 'net10.0-windows';
 
 let outputChannel: vscode.OutputChannel | undefined;
 
@@ -30,6 +32,13 @@ interface DesignerSession {
   pipeName: string;
   callbackServer: net.Server;
   lastXamlPath?: string;
+}
+
+export interface DesignerSessionInfo {
+  projectPath: string;
+  pipeName: string;
+  pid: number | null;
+  lastXamlPath: string | null;
 }
 
 interface DesignerPipeMessage {
@@ -56,6 +65,11 @@ export function setEventHandlerCallback(cb: (msg: DesignerCallbackMessage) => vo
 }
 
 function createCallbackServer(pipeName: string): net.Server {
+  const pipePath = getDesignerPipePath(pipeName);
+  if (process.platform !== 'win32') {
+    try { fs.unlinkSync(pipePath); } catch { /* stale socket may not exist */ }
+  }
+
   const server = net.createServer(socket => {
     let data = '';
     socket.on('data', chunk => { data += chunk.toString(); });
@@ -71,8 +85,87 @@ function createCallbackServer(pipeName: string): net.Server {
     });
     socket.on('error', () => { /* connection errors are non-fatal */ });
   });
-  server.listen(`\\\\.\\pipe\\${pipeName}`);
+  server.listen(pipePath);
   return server;
+}
+
+function getDesignerPipePath(pipeName: string): string {
+  return process.platform === 'win32'
+    ? `\\\\.\\pipe\\${pipeName}`
+    : path.join(os.tmpdir(), `CoreFxPipe_${pipeName}`);
+}
+
+function getDotnetSdkEnvironment(dotnet: string): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  const dotnetBinDir = path.dirname(dotnet);
+  let dotnetRoot: string | undefined;
+
+  if (fs.existsSync(path.join(dotnetBinDir, 'sdk'))) {
+    dotnetRoot = dotnetBinDir;
+  } else {
+    const homebrewLibexec = path.resolve(dotnetBinDir, '..', 'libexec');
+    if (fs.existsSync(path.join(homebrewLibexec, 'sdk'))) {
+      dotnetRoot = homebrewLibexec;
+    }
+  }
+
+  if (!dotnetRoot) {
+    return env;
+  }
+
+  const sdkRoot = path.join(dotnetRoot, 'sdk');
+  const sdkDirs = fs.readdirSync(sdkRoot)
+    .map(name => path.join(sdkRoot, name))
+    .filter(p => fs.statSync(p).isDirectory())
+    .sort();
+  const sdkDir = sdkDirs[sdkDirs.length - 1];
+  if (!sdkDir) {
+    return env;
+  }
+
+  env.DOTNET_ROOT = dotnetRoot;
+  env.DOTNET_HOST_PATH = dotnet;
+  env.MSBuildSDKsPath = path.join(sdkDir, 'Sdks');
+  env.MSBuildExtensionsPath = sdkDir;
+  env.MSBUILDADDITIONALSDKRESOLVERSFOLDER_NET = path.join(sdkDir, 'SdkResolvers');
+  env.MSBUILD_NUGET_PATH = sdkDir;
+  env.MSBuildEnableWorkloadResolver = 'false';
+  return env;
+}
+
+function getDesignerLaunchEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('VSCODE_')) {
+      delete env[key];
+    }
+  }
+
+  return env;
+}
+
+function getDesignerStdioOptions(): cp.StdioOptions {
+  const logPath = process.env.WPF_DESIGNER_PROCESS_LOG;
+  if (!logPath) {
+    return 'ignore';
+  }
+
+  try {
+    const fd = fs.openSync(logPath, 'a');
+    return ['ignore', fd, fd];
+  } catch {
+    return 'ignore';
+  }
+}
+
+function getDesignerBuildDotnet(context: vscode.ExtensionContext): string {
+  const configured = vscode.workspace.getConfiguration('wpf').get<string>('libreWpfDotnetPath', '').trim();
+  if (configured) {
+    return configured;
+  }
+
+  return vscode.workspace.getConfiguration('wpf').get<string>('dotnetPath', 'dotnet');
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +432,7 @@ export function getDesignerExecutable(context: vscode.ExtensionContext, projectP
 function getBundledDesignerExecutable(context: vscode.ExtensionContext, toolsSubdir: string): string | null {
   const toolsDir = path.join(context.extensionPath, 'tools', toolsSubdir);
 
-  for (const name of ['XamlDesigner.exe', 'Demo.XamlDesigner.exe']) {
+  for (const name of ['XamlDesigner.exe', 'Demo.XamlDesigner.exe', 'XamlDesigner.dll', 'Demo.XamlDesigner.dll']) {
     const p = path.join(toolsDir, name);
     if (fs.existsSync(p)) { return p; }
   }
@@ -399,13 +492,27 @@ export function launchDesigner(
   // NewFileTemplate.xaml is read with a bare relative path inside the designer —
   // working directory must be the exe's own folder.
   const cwd = path.dirname(exe);
+  const stdio = getDesignerStdioOptions();
 
   let proc: cp.ChildProcess;
   if (/\.dll$/i.test(exe)) {
     const dotnet = vscode.workspace.getConfiguration('wpf').get<string>('dotnetPath', 'dotnet');
-    proc = cp.spawn(dotnet, [exe, ...args], { cwd, shell: true, detached: true, stdio: 'ignore', windowsHide: false });
+    proc = cp.spawn(dotnet, [exe, ...args], {
+      cwd,
+      shell: false,
+      detached: true,
+      env: getDesignerLaunchEnvironment(),
+      stdio,
+      windowsHide: false,
+    });
   } else {
-    proc = cp.spawn(exe, args, { cwd, detached: true, stdio: 'ignore', windowsHide: false });
+    proc = cp.spawn(exe, args, {
+      cwd,
+      detached: true,
+      env: getDesignerLaunchEnvironment(),
+      stdio,
+      windowsHide: false,
+    });
   }
 
   proc.unref();
@@ -433,6 +540,20 @@ export function launchDesigner(
 export function hasRunningDesignerSession(projectPath: string): boolean {
   const session = activeDesigners.get(projectPath);
   return !!session && !session.proc.killed;
+}
+
+export function getDesignerSessionInfo(projectPath: string): DesignerSessionInfo | null {
+  const session = activeDesigners.get(projectPath);
+  if (!session || session.proc.killed) {
+    return null;
+  }
+
+  return {
+    projectPath,
+    pipeName: session.pipeName,
+    pid: session.proc.pid ?? null,
+    lastXamlPath: session.lastXamlPath ?? null,
+  };
 }
 
 export function pushLiveXamlUpdate(projectPath: string, xamlPath: string, xamlText: string): void {
@@ -470,7 +591,7 @@ function createDesignerMessage(xamlPath: string, xamlText?: string): DesignerPip
 }
 
 function sendDesignerMessage(pipeName: string, message: DesignerPipeMessage): void {
-  const pipePath = `\\\\.\\pipe\\${pipeName}`;
+  const pipePath = getDesignerPipePath(pipeName);
   const client = net.createConnection(pipePath, () => {
     client.write(JSON.stringify(message), () => client.end());
   });
@@ -503,7 +624,7 @@ async function sendDesignerMessageWithRetry(
 }
 
 function trySendDesignerMessage(pipeName: string, message: DesignerPipeMessage): Promise<void> {
-  const pipePath = `\\\\.\\pipe\\${pipeName}`;
+  const pipePath = getDesignerPipePath(pipeName);
   return new Promise((resolve, reject) => {
     const client = net.createConnection(pipePath, () => {
       client.write(JSON.stringify(message), err => {
@@ -547,43 +668,20 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
   }
 
   const outDir = path.join(context.extensionPath, 'tools', 'XamlDesigner');
-  const submoduleRoot = path.join(context.extensionPath, 'external', 'WpfDesigner');
-  const tempProps = path.join(submoduleRoot, 'Directory.Build.props');
 
   const cfg = vscode.workspace.getConfiguration('wpf');
-  const dotnet = cfg.get<string>('dotnetPath', 'dotnet');
+  const dotnet = getDesignerBuildDotnet(context);
+  const buildEnv = getDotnetSdkEnvironment(dotnet);
   let modernBuildSucceeded = false;
 
-  // Resolve target framework: explicit setting → auto-detect highest SDK → fallback.
+  // LibreWPF currently exposes the designer WPF surface through net10.0-windows packages.
   const settingTfm = cfg.get<string>('designerTargetFramework', '').trim();
-  let targetFramework: string;
-  if (settingTfm) {
-    targetFramework = settingTfm;
-    channel.appendLine(`  TargetFramework : ${targetFramework} (from setting)`);
-  } else {
-    channel.appendLine('  TargetFramework : detecting highest installed .NET SDK…');
-    targetFramework = await detectHighestDotnetSdkTfm(dotnet) ?? 'net10.0-windows';
-    channel.appendLine(`  TargetFramework : ${targetFramework} (auto-detected)`);
-  }
+  const targetFramework = settingTfm || DEFAULT_LIBREWPF_TFM;
 
   channel.appendLine(`\n=== Building XamlDesigner ===`);
+  channel.appendLine(`  Dotnet          : ${dotnet}`);
   channel.appendLine(`  Output          : ${outDir}`);
   channel.appendLine(`  TargetFramework : ${targetFramework}\n`);
-
-  // Write a temporary Directory.Build.props so every project in the submodule
-  // inherits the same TargetFramework during restore AND build — no csproj edits needed.
-  const propsContent =
-    `<!-- Auto-generated by vscode-wpf extension — do not commit -->\n` +
-    `<Project>\n  <PropertyGroup>\n` +
-    `    <TargetFramework>${targetFramework}</TargetFramework>\n` +
-    `  </PropertyGroup>\n</Project>\n`;
-
-  try {
-    fs.writeFileSync(tempProps, propsContent, 'utf8');
-    channel.appendLine(`  Wrote temporary Directory.Build.props\n`);
-  } catch (err) {
-    channel.appendLine(`WARNING: Could not write Directory.Build.props: ${err}`);
-  }
 
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Building WPF Designer Tools…', cancellable: false },
@@ -592,8 +690,8 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
         void stopConflictingDesignerProcesses(dotnet, channel).then(() => {
           const restoreProc = cp.spawn(
             dotnet,
-            ['restore', submoduleCsproj, '--nologo', '-p:UseSharedCompilation=false', `-p:TargetFramework=${targetFramework}`],
-            { shell: true }
+            ['restore', submoduleCsproj, '--nologo', '-p:UseSharedCompilation=false', `-p:XamlDesignerDefaultTargetFramework=${targetFramework}`],
+            { shell: true, env: buildEnv }
           );
           restoreProc.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
           restoreProc.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
@@ -616,18 +714,14 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
               dotnet,
               ['build', submoduleCsproj, '--configuration', 'Release',
                 '--nologo', '--no-restore', '-maxcpucount:1', '-p:UseSharedCompilation=false',
-                `-p:TargetFramework=${targetFramework}`],
-              { shell: true }
+                `-p:XamlDesignerDefaultTargetFramework=${targetFramework}`],
+              { shell: true, env: buildEnv }
             );
 
             proc.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
             proc.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
 
             proc.on('close', (code: number | null) => {
-              // Always remove the temp props file before reporting.
-              try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
-              channel.appendLine('  Removed temporary Directory.Build.props');
-
               if (code === 0) {
                 const builtOutputDir = path.join(
                   context.extensionPath,
@@ -659,7 +753,6 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
             });
 
             proc.on('error', (err: Error) => {
-              try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
               channel.appendLine(`ERROR: ${err.message}`);
               vscode.window.showErrorMessage(`Build error: ${err.message}`);
               resolve();
@@ -674,22 +767,22 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
     return;
   }
 
-  const legacyBuildSucceeded = await buildLegacyDesignerTools(context, dotnet, submoduleCsproj, tempProps, channel);
-  if (!legacyBuildSucceeded) {
-    vscode.window.showErrorMessage(
-      'Failed to build required net481 designer artifacts. Install the .NET Framework 4.8.1 targeting pack and rebuild.'
-    );
-    return;
+  if (process.platform === 'win32') {
+    const legacyBuildSucceeded = await buildLegacyDesignerTools(context, cfg.get<string>('dotnetPath', 'dotnet'), submoduleCsproj, channel);
+    if (!legacyBuildSucceeded) {
+      vscode.window.showWarningMessage(
+        'Built the LibreWPF designer, but failed to build net481 legacy designer artifacts. .NET Framework projects will not have full designer type support.'
+      );
+    }
   }
 
-  vscode.window.showInformationMessage(`WPF Designer Tools built (${targetFramework} + net481).`);
+  vscode.window.showInformationMessage(`WPF Designer Tools built with LibreWPF (${targetFramework}).`);
 }
 
 async function buildLegacyDesignerTools(
   context: vscode.ExtensionContext,
   dotnet: string,
   submoduleCsproj: string,
-  tempProps: string,
   channel: vscode.OutputChannel
 ): Promise<boolean> {
   const legacyTfm = 'net481';
@@ -697,38 +790,22 @@ async function buildLegacyDesignerTools(
 
   channel.appendLine(`\n=== Building .NET Framework Designer (${legacyTfm}) ===`);
 
-  const propsContent =
-    `<!-- Auto-generated by vscode-wpf extension — do not commit -->\n` +
-    `<Project>\n  <PropertyGroup>\n` +
-    `    <TargetFramework>${legacyTfm}</TargetFramework>\n` +
-    `  </PropertyGroup>\n</Project>\n`;
-
-  try {
-    fs.writeFileSync(tempProps, propsContent, 'utf8');
-    channel.appendLine(`  Wrote temporary Directory.Build.props (${legacyTfm})`);
-  } catch (err) {
-    channel.appendLine(`ERROR: Could not write Directory.Build.props for ${legacyTfm}: ${err}`);
-    return false;
-  }
-
   return await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: `Building .NET Framework Designer (${legacyTfm})…`, cancellable: false },
     () => new Promise<boolean>(resolve => {
       const restore = cp.spawn(
         dotnet,
-        ['restore', submoduleCsproj, '--nologo', '-p:UseSharedCompilation=false', `-p:TargetFramework=${legacyTfm}`],
+        ['restore', submoduleCsproj, '--nologo', '-p:UseSharedCompilation=false', `-p:XamlDesignerDefaultTargetFramework=${legacyTfm}`],
         { shell: true }
       );
       restore.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
       restore.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
       restore.on('error', err => {
-        try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
         channel.appendLine(`ERROR: ${err.message}`);
         resolve(false);
       });
       restore.on('close', (restoreCode: number | null) => {
         if (restoreCode !== 0) {
-          try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
           channel.appendLine(`\n${legacyTfm} restore failed — the .NET Framework 4.8.1 targeting pack may not be installed.`);
           resolve(false);
           return;
@@ -738,20 +815,16 @@ async function buildLegacyDesignerTools(
           dotnet,
           ['build', submoduleCsproj, '--configuration', 'Release',
             '--nologo', '--no-restore', '-maxcpucount:1', '-p:UseSharedCompilation=false',
-            `-p:TargetFramework=${legacyTfm}`],
+            `-p:XamlDesignerDefaultTargetFramework=${legacyTfm}`],
           { shell: true }
         );
         build.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
         build.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
         build.on('error', err => {
-          try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
           channel.appendLine(`ERROR: ${err.message}`);
           resolve(false);
         });
         build.on('close', (code: number | null) => {
-          try { fs.unlinkSync(tempProps); } catch { /* ignore */ }
-          channel.appendLine('  Removed temporary Directory.Build.props');
-
           if (code === 0) {
             const builtDir = path.join(
               context.extensionPath, 'external', 'WpfDesigner', 'XamlDesigner', 'bin', 'Release', legacyTfm
@@ -796,6 +869,17 @@ function syncBuiltDesignerOutput(sourceDir: string, destinationDir: string): voi
 }
 
 function stopConflictingDesignerProcesses(dotnet: string, channel: vscode.OutputChannel): Promise<void> {
+  if (process.platform !== 'win32') {
+    return new Promise(resolve => {
+      const shutdown = cp.spawn(dotnet, ['build-server', 'shutdown'], { shell: true });
+      shutdown.on('close', () => {
+        channel.appendLine('[Designer] Shut down dotnet build servers.');
+        resolve();
+      });
+      shutdown.on('error', () => resolve());
+    });
+  }
+
   const imageNames = [
     'VBCSCompiler.exe',
     'XamlDesigner.exe',
