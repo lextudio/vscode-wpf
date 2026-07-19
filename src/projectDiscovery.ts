@@ -236,6 +236,17 @@ export function parseProject(projectPath: string): { projectName: string; target
 }
 
 /**
+ * Native Win32-compat shim libraries LibreWPF's portable mode places alongside a
+ * project's own output on macOS/Linux (see ProGPU.Wpf.Sdk.targets) so P/Invoke calls
+ * like DllImport("comdlg32.dll") resolve locally. They carry a .dll extension but are
+ * not managed assemblies, so they must never be handed to the designer's assembly loader.
+ */
+const NATIVE_WIN32_SHIM_NAMES = new Set([
+  'kernel32.dll', 'user32.dll', 'gdi32.dll', 'dwmapi.dll',
+  'uxtheme.dll', 'shell32.dll', 'gdiplus.dll', 'comdlg32.dll',
+]);
+
+/**
  * Return .dll paths in the project output directory (requires a prior build).
  */
 export function getOutputAssemblies(projectPath: string): string[] {
@@ -247,7 +258,10 @@ export function getOutputAssemblies(projectPath: string): string[] {
 
   return fs
     .readdirSync(outputPath)
-    .filter((f: string) => f.endsWith('.dll') && !f.endsWith('.resources.dll'))
+    .filter((f: string) =>
+      f.endsWith('.dll') &&
+      !f.endsWith('.resources.dll') &&
+      !NATIVE_WIN32_SHIM_NAMES.has(f.toLowerCase()))
     .map((f: string) => path.join(outputPath, f));
 }
 

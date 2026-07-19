@@ -65,6 +65,20 @@ internal static class MsBuildAnalyzer
         var useWinForms = GetBoolProperty(msbuildProject, "UseWindowsForms");
         var outputType = GetProperty(msbuildProject, "OutputType");
 
+        // LibreWPF.Sdk (the cross-platform WPF port used for net10.0-windows) forces
+        // UseWPF back to false in its own Sdk.targets for portable/ProGPU-backed builds,
+        // overriding whatever the project itself declares — see
+        // librewpf.sdk/Sdk/Sdk.targets: "<UseWPF Condition=... >false</UseWPF>" imported
+        // after the project body. The SDK preserves the project's original authored value
+        // in _ProGpuWpfProjectUseWPF (and mirrors it into ProGpuWpfUseWpfMarkup) specifically
+        // so downstream tooling like this analyzer can still recognize it as a WPF project.
+        var isLibreWpfSdk = msbuildProject.Xml.Sdk?.Contains("LibreWPF.Sdk", StringComparison.OrdinalIgnoreCase) == true;
+        if (isLibreWpfSdk && !useWpf)
+        {
+            useWpf = GetBoolProperty(msbuildProject, "_ProGpuWpfProjectUseWPF") ||
+                     GetBoolProperty(msbuildProject, "ProGpuWpfUseWpfMarkup");
+        }
+
         // Read the user's actual EnableWindowsTargeting value with a separate
         // MSBuild evaluation that does not inject the global property above.
         // The injected evaluation is only for resolving Windows-targeted WPF

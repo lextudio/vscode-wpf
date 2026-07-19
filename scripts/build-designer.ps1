@@ -10,8 +10,8 @@
     MSBuild configuration to use (default: Release).
 
 .PARAMETER TargetFramework
-    Target framework to compile for. Defaults to net10.0-windows, matching
-    the local LibreWPF.Sdk/11.0.0-dev packages.
+    Modern (cross-platform) target framework to compile for. Defaults to
+    net10.0-windows, matching the LibreWPF.Sdk packages.
 
 .EXAMPLE
     .\scripts\build-designer.ps1
@@ -33,7 +33,6 @@ $SubmoduleCsproj = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\Demo.X
 $SubmoduleRoot   = Join-Path $RepoRoot "external\WpfDesigner"
 $OutputDir       = Join-Path $RepoRoot "tools\XamlDesigner"
 $TfmFile         = Join-Path $OutputDir "designer.tfm"
-$BuiltOutputDir  = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$TargetFramework"
 
 # Verify submodule is initialised
 if (-not (Test-Path $SubmoduleCsproj)) {
@@ -137,20 +136,13 @@ if (-not $TargetFramework) {
     Write-Host "  TargetFramework : $TargetFramework (explicit)" -ForegroundColor DarkGray
 }
 
-Setup-DotnetEnv $DotnetPath
+$LegacyTfm       = "net481"
+$LegacyOutputDir = Join-Path $RepoRoot "tools\XamlDesignerLegacy"
 
-Write-Host ""
-Write-Host "=== WPF Designer Tools Build ===" -ForegroundColor Cyan
-Write-Host "  Project       : $SubmoduleCsproj"
-Write-Host "  Output        : $OutputDir"
-Write-Host "  Configuration : $Configuration"
-Write-Host "  Framework     : $TargetFramework"
-Write-Host "  Dotnet        : $DotnetPath"
-Write-Host ""
-
-# Decide which build passes to run based on flags. If no flags provided,
-# perform both modern and legacy builds. If -OnlyModern is supplied, only
-# build the modern TFM. If -OnlyLegacy is supplied, only build net481.
+# Decide which TFMs to build based on flags. If no flags provided, build
+# both modern (net10.0-windows) and legacy (net481) in a single multi-target
+# restore/build — Directory.Build.props sets TargetFrameworks accordingly.
+# If -OnlyModern/-OnlyLegacy is supplied, restrict to a single TFM.
 if ($OnlyModern) {
     $doModern = $true
     $doLegacy = $false
@@ -164,110 +156,87 @@ else {
     $doLegacy = $IsWindows
 }
 
-# Create output directory if needed
-if (-not (Test-Path $OutputDir)) {
-    New-Item -ItemType Directory -Path $OutputDir | Out-Null
-}
+$tfms = @()
+if ($doModern) { $tfms += $TargetFramework }
+if ($doLegacy) { $tfms += $LegacyTfm }
+$TargetFrameworksArg = [string]::Join(';', $tfms)
 
-$BuiltOutputDir  = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$TargetFramework"
-
-if ($doModern) {
-    Write-Host "  Using LibreWPF.Sdk/11.0.0-dev from the local LibreWPF package feed" -ForegroundColor DarkGray
-
-    Stop-ConflictingDesignerProcesses -RepoRootPath $RepoRoot -BuildOutputPath $OutputDir
-
-    Write-Host ""
-    Write-Host "Running: dotnet restore ..." -ForegroundColor Yellow
-    & $DotnetPath restore "$SubmoduleCsproj" --nologo -p:UseSharedCompilation=false "-p:XamlDesignerDefaultTargetFramework=$TargetFramework"
-    if ($LASTEXITCODE -ne 0) { Write-Error "Restore failed with exit code $LASTEXITCODE."; exit $LASTEXITCODE }
-
-    Write-Host "Running: dotnet build ..." -ForegroundColor Yellow
-    & $DotnetPath build "$SubmoduleCsproj" `
-        --configuration $Configuration `
-        --nologo `
-        --no-restore `
-        -maxcpucount:1 `
-        -p:UseSharedCompilation=false `
-        "-p:XamlDesignerDefaultTargetFramework=$TargetFramework"
-    if ($LASTEXITCODE -ne 0) { Write-Error "Build failed with exit code $LASTEXITCODE."; exit $LASTEXITCODE }
-
-    # Record the TFM so the extension can check compatibility at launch time
-    if (-not (Test-Path $BuiltOutputDir)) {
-        Write-Error "Expected built output directory was not found: $BuiltOutputDir"
-        exit 1
-    }
-
-    Get-ChildItem -Path $OutputDir -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Copy-Item -Path (Join-Path $BuiltOutputDir '*') -Destination $OutputDir -Recurse -Force
-    Set-Content -Path $TfmFile -Value $TargetFramework -Encoding UTF8
-
-    # Report result
-    $exe = Join-Path $OutputDir "XamlDesigner.exe"
-    $dll = Join-Path $OutputDir "Demo.XamlDesigner.dll"
-    Write-Host ""
-    if (Test-Path $exe) {
-        Write-Host "Build succeeded." -ForegroundColor Green
-        Write-Host "  Executable : $exe"
-    } elseif (Test-Path $dll) {
-        Write-Host "Build succeeded." -ForegroundColor Green
-        Write-Host "  Assembly   : $dll"
-    } else {
-        Write-Warning "Build completed but expected outputs were not found in $OutputDir."
-    }
-}
-
-# ---------------------------------------------------------------------------
-# Optional Windows-only legacy designer for net4x project support.
-# ---------------------------------------------------------------------------
-$LegacyTfm       = "net481"
-$LegacyOutputDir = Join-Path $RepoRoot "tools\XamlDesignerLegacy"
-$LegacyBuiltDir  = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$LegacyTfm"
+Setup-DotnetEnv $DotnetPath
 
 Write-Host ""
-Write-Host "=== Building .NET Framework Designer ($LegacyTfm) ===" -ForegroundColor Cyan
+Write-Host "=== WPF Designer Tools Build ===" -ForegroundColor Cyan
+Write-Host "  Project        : $SubmoduleCsproj"
+Write-Host "  Configuration  : $Configuration"
+Write-Host "  TargetFrameworks : $TargetFrameworksArg"
+Write-Host "  Dotnet         : $DotnetPath"
+Write-Host ""
 
-if (-not $doLegacy) {
-    Write-Host "Skipping $LegacyTfm designer on this platform." -ForegroundColor DarkGray
+if (-not $tfms.Count) {
+    Write-Host "Nothing to build for this platform/flag combination." -ForegroundColor DarkGray
     exit 0
 }
 
-if (-not (Test-Path $LegacyOutputDir)) {
+# Create output directories if needed
+if ($doModern -and -not (Test-Path $OutputDir)) {
+    New-Item -ItemType Directory -Path $OutputDir | Out-Null
+}
+if ($doLegacy -and -not (Test-Path $LegacyOutputDir)) {
     New-Item -ItemType Directory -Path $LegacyOutputDir | Out-Null
 }
 
-Write-Host "  Using committed external/WpfDesigner/Directory.Build.props; passing XamlDesignerDefaultTargetFramework=net481" -ForegroundColor DarkGray
+Stop-ConflictingDesignerProcesses -RepoRootPath $RepoRoot -BuildOutputPath $OutputDir
 
-$legacyOk = $false
-try {
-    & dotnet restore "$SubmoduleCsproj" --nologo -p:UseSharedCompilation=false "-p:XamlDesignerDefaultTargetFramework=$LegacyTfm" "-p:EnableWindowsTargeting=true" 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Restore failed" }
+Write-Host "Running: dotnet restore ..." -ForegroundColor Yellow
+& $DotnetPath restore "$SubmoduleCsproj" --nologo --force -p:UseSharedCompilation=false "-p:XamlDesignerDefaultTargetFrameworks=$TargetFrameworksArg" "-p:EnableWindowsTargeting=true"
+if ($LASTEXITCODE -ne 0) { Write-Error "Restore failed with exit code $LASTEXITCODE."; exit $LASTEXITCODE }
 
-    & dotnet build "$SubmoduleCsproj" `
-        --configuration $Configuration `
-        --nologo `
-        --no-restore `
-        -maxcpucount:1 `
-        -p:UseSharedCompilation=false `
-        "-p:XamlDesignerDefaultTargetFramework=$LegacyTfm" "-p:EnableWindowsTargeting=true" 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+Write-Host "Running: dotnet build ..." -ForegroundColor Yellow
+& $DotnetPath build "$SubmoduleCsproj" `
+    --configuration $Configuration `
+    --nologo `
+    --no-restore `
+    -maxcpucount:1 `
+    -p:UseSharedCompilation=false `
+    "-p:XamlDesignerDefaultTargetFrameworks=$TargetFrameworksArg" `
+    "-p:EnableWindowsTargeting=true"
+if ($LASTEXITCODE -ne 0) { Write-Error "Build failed with exit code $LASTEXITCODE."; exit $LASTEXITCODE }
 
-    if (-not (Test-Path $LegacyBuiltDir)) { throw "Output directory not found" }
+function Publish-DesignerOutput {
+    param(
+        [string]$Tfm,
+        [string]$Destination,
+        [string]$TfmFilePath
+    )
 
-    Get-ChildItem -Path $LegacyOutputDir -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Copy-Item -Path (Join-Path $LegacyBuiltDir '*') -Destination $LegacyOutputDir -Recurse -Force
-    $legacyOk = $true
+    $builtDir = Join-Path $RepoRoot "external\WpfDesigner\XamlDesigner\bin\$Configuration\$Tfm"
+    if (-not (Test-Path $builtDir)) {
+        Write-Error "Expected built output directory was not found: $builtDir"
+        exit 1
+    }
+
+    Get-ChildItem -Path $Destination -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -Path (Join-Path $builtDir '*') -Destination $Destination -Recurse -Force
+    Set-Content -Path $TfmFilePath -Value $Tfm -Encoding UTF8
+
+    $exe = Join-Path $Destination "Demo.XamlDesigner.exe"
+    $dll = Join-Path $Destination "Demo.XamlDesigner.dll"
+    Write-Host ""
+    if (Test-Path $exe) {
+        Write-Host "$Tfm build succeeded." -ForegroundColor Green
+        Write-Host "  Executable : $exe"
+    } elseif (Test-Path $dll) {
+        Write-Host "$Tfm build succeeded." -ForegroundColor Green
+        Write-Host "  Assembly   : $dll"
+    } else {
+        Write-Warning "$Tfm build completed but expected outputs were not found in $Destination."
+    }
 }
-catch {
-    Write-Error "net481 designer build failed: $_"
+
+if ($doModern) {
+    Publish-DesignerOutput -Tfm $TargetFramework -Destination $OutputDir -TfmFilePath $TfmFile
 }
 
-if ($legacyOk) {
-    $legacyExe = Join-Path $LegacyOutputDir "XamlDesigner.exe"
+if ($doLegacy) {
     $legacyTfmFile = Join-Path $LegacyOutputDir "designer.tfm"
-    Set-Content -Path $legacyTfmFile -Value $LegacyTfm -Encoding UTF8
-    Write-Host "$LegacyTfm designer built." -ForegroundColor Green
-    Write-Host "  Executable : $legacyExe"
-} else {
-    Write-Error "Required net481 designer build did not produce output. Install the .NET Framework 4.8.1 targeting pack/developer pack and retry."
-    exit 1
+    Publish-DesignerOutput -Tfm $LegacyTfm -Destination $LegacyOutputDir -TfmFilePath $legacyTfmFile
 }

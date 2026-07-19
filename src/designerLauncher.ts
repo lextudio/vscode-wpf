@@ -672,17 +672,29 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
   const cfg = vscode.workspace.getConfiguration('wpf');
   const dotnet = getDesignerBuildDotnet(context);
   const buildEnv = getDotnetSdkEnvironment(dotnet);
-  let modernBuildSucceeded = false;
 
   // LibreWPF currently exposes the designer WPF surface through net10.0-windows packages.
   const settingTfm = cfg.get<string>('designerTargetFramework', '').trim();
   const targetFramework = settingTfm || DEFAULT_LIBREWPF_TFM;
+  const legacyTfm = 'net481';
+  const includeLegacy = process.platform === 'win32';
+  const frameworks = includeLegacy && targetFramework !== legacyTfm
+    ? [targetFramework, legacyTfm]
+    : [targetFramework];
+  const targetFrameworksArg = frameworks.join(';');
 
   channel.appendLine(`\n=== Building XamlDesigner ===`);
-  channel.appendLine(`  Dotnet          : ${dotnet}`);
-  channel.appendLine(`  Output          : ${outDir}`);
-  channel.appendLine(`  TargetFramework : ${targetFramework}\n`);
+  channel.appendLine(`  Dotnet           : ${dotnet}`);
+  channel.appendLine(`  Output           : ${outDir}`);
+  channel.appendLine(`  TargetFrameworks : ${targetFrameworksArg}\n`);
 
+  // Restore and build every requested TFM together in one multi-target pass — Directory.Build.props
+  // in the WpfDesigner submodule sets TargetFrameworks from XamlDesignerDefaultTargetFrameworks.
+  // Two sequential single-TFM restore/build passes against the same obj/ cache (the previous
+  // approach) can leave a stale project.assets.json missing whichever TFM wasn't built last,
+  // causing NETSDK1005 on the next run. --force on restore additionally guards against NuGet's
+  // incremental no-op path reusing a still-stale assets file across setting changes.
+  let buildSucceeded = false;
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Building WPF Designer Tools…', cancellable: false },
     async () => {
@@ -690,7 +702,8 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
         void stopConflictingDesignerProcesses(dotnet, channel).then(() => {
           const restoreProc = cp.spawn(
             dotnet,
-            ['restore', submoduleCsproj, '--nologo', '-p:UseSharedCompilation=false', `-p:XamlDesignerDefaultTargetFramework=${targetFramework}`],
+            ['restore', submoduleCsproj, '--nologo', '--force', '-p:UseSharedCompilation=false',
+              `-p:XamlDesignerDefaultTargetFrameworks=${targetFrameworksArg}`, '-p:EnableWindowsTargeting=true'],
             { shell: true, env: buildEnv }
           );
           restoreProc.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
@@ -714,7 +727,7 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
               dotnet,
               ['build', submoduleCsproj, '--configuration', 'Release',
                 '--nologo', '--no-restore', '-maxcpucount:1', '-p:UseSharedCompilation=false',
-                `-p:XamlDesignerDefaultTargetFramework=${targetFramework}`],
+                `-p:XamlDesignerDefaultTargetFrameworks=${targetFrameworksArg}`, '-p:EnableWindowsTargeting=true'],
               { shell: true, env: buildEnv }
             );
 
@@ -723,28 +736,8 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
 
             proc.on('close', (code: number | null) => {
               if (code === 0) {
-                const builtOutputDir = path.join(
-                  context.extensionPath,
-                  'external',
-                  'WpfDesigner',
-                  'XamlDesigner',
-                  'bin',
-                  'Release',
-                  targetFramework
-                );
-
-                try {
-                  syncBuiltDesignerOutput(builtOutputDir, outDir);
-                } catch (err) {
-                  channel.appendLine(`ERROR: Failed to stage built designer artifacts: ${err}`);
-                  vscode.window.showErrorMessage('Designer build succeeded, but staging the output failed. See "WPF Designer" output channel.');
-                  resolve();
-                  return;
-                }
-
-                writeDesignerTfm(outDir, targetFramework);
-                channel.appendLine(`\nDesigner tools built successfully (${targetFramework}).`);
-                modernBuildSucceeded = true;
+                buildSucceeded = true;
+                channel.appendLine(`\nBuild succeeded for ${targetFrameworksArg}.`);
               } else {
                 channel.appendLine(`\nBuild FAILED (exit code ${code}).`);
                 vscode.window.showErrorMessage('Failed to build WPF Designer Tools. See "WPF Designer" output channel.');
@@ -763,89 +756,41 @@ export async function buildDesignerTools(context: vscode.ExtensionContext): Prom
     }
   );
 
-  if (!modernBuildSucceeded) {
+  if (!buildSucceeded) {
     return;
   }
 
-  if (process.platform === 'win32') {
-    const legacyBuildSucceeded = await buildLegacyDesignerTools(context, cfg.get<string>('dotnetPath', 'dotnet'), submoduleCsproj, channel);
-    if (!legacyBuildSucceeded) {
+  const builtOutputDir = path.join(
+    context.extensionPath, 'external', 'WpfDesigner', 'XamlDesigner', 'bin', 'Release', targetFramework
+  );
+  try {
+    syncBuiltDesignerOutput(builtOutputDir, outDir);
+  } catch (err) {
+    channel.appendLine(`ERROR: Failed to stage built designer artifacts: ${err}`);
+    vscode.window.showErrorMessage('Designer build succeeded, but staging the output failed. See "WPF Designer" output channel.');
+    return;
+  }
+  writeDesignerTfm(outDir, targetFramework);
+  channel.appendLine(`\nDesigner tools staged (${targetFramework}).`);
+
+  if (includeLegacy) {
+    const legacyOutDir = path.join(context.extensionPath, 'tools', LEGACY_DESIGNER_DIR);
+    const legacyBuiltDir = path.join(
+      context.extensionPath, 'external', 'WpfDesigner', 'XamlDesigner', 'bin', 'Release', legacyTfm
+    );
+    try {
+      syncBuiltDesignerOutput(legacyBuiltDir, legacyOutDir);
+      writeDesignerTfm(legacyOutDir, legacyTfm);
+      channel.appendLine(`.NET Framework designer staged (${legacyTfm}).`);
+    } catch (err) {
+      channel.appendLine(`ERROR: Failed to stage ${legacyTfm} artifacts: ${err}`);
       vscode.window.showWarningMessage(
-        'Built the LibreWPF designer, but failed to build net481 legacy designer artifacts. .NET Framework projects will not have full designer type support.'
+        'Built the LibreWPF designer, but failed to stage net481 legacy designer artifacts. .NET Framework projects will not have full designer type support.'
       );
     }
   }
 
   vscode.window.showInformationMessage(`WPF Designer Tools built with LibreWPF (${targetFramework}).`);
-}
-
-async function buildLegacyDesignerTools(
-  context: vscode.ExtensionContext,
-  dotnet: string,
-  submoduleCsproj: string,
-  channel: vscode.OutputChannel
-): Promise<boolean> {
-  const legacyTfm = 'net481';
-  const legacyOutDir = path.join(context.extensionPath, 'tools', LEGACY_DESIGNER_DIR);
-
-  channel.appendLine(`\n=== Building .NET Framework Designer (${legacyTfm}) ===`);
-
-  return await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: `Building .NET Framework Designer (${legacyTfm})…`, cancellable: false },
-    () => new Promise<boolean>(resolve => {
-      const restore = cp.spawn(
-        dotnet,
-        ['restore', submoduleCsproj, '--nologo', '-p:UseSharedCompilation=false', `-p:XamlDesignerDefaultTargetFramework=${legacyTfm}`],
-        { shell: true }
-      );
-      restore.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
-      restore.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
-      restore.on('error', err => {
-        channel.appendLine(`ERROR: ${err.message}`);
-        resolve(false);
-      });
-      restore.on('close', (restoreCode: number | null) => {
-        if (restoreCode !== 0) {
-          channel.appendLine(`\n${legacyTfm} restore failed — the .NET Framework 4.8.1 targeting pack may not be installed.`);
-          resolve(false);
-          return;
-        }
-
-        const build = cp.spawn(
-          dotnet,
-          ['build', submoduleCsproj, '--configuration', 'Release',
-            '--nologo', '--no-restore', '-maxcpucount:1', '-p:UseSharedCompilation=false',
-            `-p:XamlDesignerDefaultTargetFramework=${legacyTfm}`],
-          { shell: true }
-        );
-        build.stdout?.on('data', (d: Buffer) => channel.append(d.toString()));
-        build.stderr?.on('data', (d: Buffer) => channel.append(d.toString()));
-        build.on('error', err => {
-          channel.appendLine(`ERROR: ${err.message}`);
-          resolve(false);
-        });
-        build.on('close', (code: number | null) => {
-          if (code === 0) {
-            const builtDir = path.join(
-              context.extensionPath, 'external', 'WpfDesigner', 'XamlDesigner', 'bin', 'Release', legacyTfm
-            );
-            try {
-              syncBuiltDesignerOutput(builtDir, legacyOutDir);
-              writeDesignerTfm(legacyOutDir, legacyTfm);
-              channel.appendLine(`\n.NET Framework designer built successfully (${legacyTfm}).`);
-              resolve(true);
-            } catch (err) {
-              channel.appendLine(`ERROR: Failed to stage ${legacyTfm} artifacts: ${err}`);
-              resolve(false);
-            }
-          } else {
-            channel.appendLine(`\n${legacyTfm} build failed (exit ${code}) — the .NET Framework 4.8.1 targeting pack may not be installed.`);
-            resolve(false);
-          }
-        });
-      });
-    })
-  );
 }
 
 function syncBuiltDesignerOutput(sourceDir: string, destinationDir: string): void {

@@ -74,9 +74,14 @@
     },
     {
       "label": "Build Designer Tools",
-      "dependsOn": ["Build Designer (.NET)", "Build Designer (NETFX)"],
-      "dependsOrder": "parallel",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", "${workspaceFolder}/scripts/build-designer.ps1"
+      ],
       "group": "build",
+      "problemMatcher": [],
       "presentation": {
         "reveal": "always",
         "panel": "shared",

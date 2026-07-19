@@ -57,13 +57,22 @@ var tieredProvider = new TieredCompilationProvider(
 
 using var engine = new XamlLanguageServiceEngine(tieredProvider, WpfFrameworkProfile.Instance);
 
-// Wire prewarm completion → invalidate stale Tier-1 analysis caches.
-// Documents that were open during Tier-1 have cached analysis keyed on (uri, generation, version).
-// Incrementing their generations forces re-analysis using the full Tier-2 compilation on the
-// next completion/hover/diagnostic request, so users don't see stale Tier-1 results.
+using var server = new AxsgLanguageServer(
+    new LspMessageReader(Console.OpenStandardInput()),
+    new LspMessageWriter(Console.OpenStandardOutput()),
+    engine,
+    options);
+
+// Wire prewarm completion → invalidate stale Tier-1 analysis caches, then republish
+// diagnostics for every open document so the client's diagnostics collection catches up.
+// Documents that were open during Tier-1 have cached analysis keyed on (uri, generation, version)
+// and may have already had Tier-1-only diagnostics (e.g. "type not found" for a clr-namespace
+// user type WpfCore can't see) pushed to the client. Without republishing, those stale
+// diagnostics sit in the client until an unrelated edit triggers re-analysis.
 tieredProvider.OnPrewarmCompleted = () =>
 {
     engine.InvalidateAllOpenDocumentCaches();
+    server.RefreshOpenDocumentDiagnostics();
 };
 
 // Kick off the full MSBuild compilation load immediately so the upgrade from
@@ -81,12 +90,6 @@ if (workspaceRoot is not null)
         Console.Error.WriteLine("[WPF-LS] No supported WPF project file (.csproj/.vbproj/.fsproj) found in workspace — prewarm skipped.");
     }
 }
-
-using var server = new AxsgLanguageServer(
-    new LspMessageReader(Console.OpenStandardInput()),
-    new LspMessageWriter(Console.OpenStandardOutput()),
-    engine,
-    options);
 
 var exitCode = await server.RunAsync(CancellationToken.None).ConfigureAwait(false);
 Environment.ExitCode = exitCode;
