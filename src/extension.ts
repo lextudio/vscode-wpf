@@ -1317,7 +1317,10 @@ interface ProjectAnalysisResult {
  */
 function resolveAnalyzerExecutable(context: vscode.ExtensionContext): string | null {
   const toolsDir = path.join(context.extensionPath, 'tools', 'WpfProjectAnalyzer');
-  for (const name of ['wpf-project-analyzer.exe', 'wpf-project-analyzer.dll']) {
+  const names = process.platform === 'win32'
+    ? ['wpf-project-analyzer.exe', 'wpf-project-analyzer.dll']
+    : ['wpf-project-analyzer.dll', 'wpf-project-analyzer.exe'];
+  for (const name of names) {
     const candidate = path.join(toolsDir, name);
     if (fs.existsSync(candidate)) {
       return candidate;
