@@ -55,7 +55,7 @@ var tieredProvider = new TieredCompilationProvider(
     fullProvider: new DiagnosticCompilationProvider(new MsBuildCompilationProvider()),
     fastSnapshot: fastSnapshot);
 
-using var engine = new XamlLanguageServiceEngine(tieredProvider, WpfFrameworkProfile.Instance);
+using var engine = new XamlLanguageServiceEngine(tieredProvider);
 
 using var server = new AxsgLanguageServer(
     new LspMessageReader(Console.OpenStandardInput()),
@@ -63,16 +63,16 @@ using var server = new AxsgLanguageServer(
     engine,
     options);
 
-// Wire prewarm completion → invalidate stale Tier-1 analysis caches, then republish
-// diagnostics for every open document so the client's diagnostics collection catches up.
-// Documents that were open during Tier-1 have cached analysis keyed on (uri, generation, version)
-// and may have already had Tier-1-only diagnostics (e.g. "type not found" for a clr-namespace
-// user type WpfCore can't see) pushed to the client. Without republishing, those stale
-// diagnostics sit in the client until an unrelated edit triggers re-analysis.
+// Wire prewarm completion → invalidate stale Tier-1 analysis caches, then notify the client
+// (same pattern as the AXSG language server's Program.cs). Documents that were open during
+// Tier-1 have cached analysis keyed on (uri, generation, version) and may have already had
+// Tier-1-only diagnostics (e.g. "type not found" for a clr-namespace user type WpfCore can't
+// see) pushed to the client. The generation bump forces re-analysis on the next request, and
+// the cacheStatus notification lets the client re-surface diagnostics for open documents.
 tieredProvider.OnPrewarmCompleted = () =>
 {
     engine.InvalidateAllOpenDocumentCaches();
-    server.RefreshOpenDocumentDiagnostics();
+    _ = server.NotifyCacheReadyAsync("wpf");
 };
 
 // Kick off the full MSBuild compilation load immediately so the upgrade from
