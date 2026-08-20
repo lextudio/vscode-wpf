@@ -30,4 +30,17 @@
       <_Parameter1>XamlLanguageServer.Wpf.Tests</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
+
+  <!-- Deploy the whole runnable server (dll + deps + runtimeconfig) into
+       AddIns/LanguageServices/XamlLanguageServer.Wpf/ so a published OpenDevelop.app
+       bundle carries it too - LspServerRegistry.CreateDefault probes this deployed
+       location first, falling back to this project's own bin/ output (dev-mode
+       source-tree layout) only when it's absent. -->
+  <Target Name="DeployToAddIns" AfterTargets="Build">
+    <ItemGroup>
+      <LanguageServerOutput Include="$(TargetDir)**" />
+    </ItemGroup>
+    <Copy SourceFiles="@(LanguageServerOutput)" SkipUnchangedFiles="true"
+          DestinationFiles="@(LanguageServerOutput->'$(MSBuildProjectDirectory)\..\..\..\..\AddIns\LanguageServices\XamlLanguageServer.Wpf\%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
 </Project>
