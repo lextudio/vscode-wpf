@@ -29,7 +29,7 @@ public sealed class WpfXCodeLanguageServiceTests
         new(CreateWpfCompilationWithCodeBehind, LazyThreadSafetyMode.ExecutionAndPublication);
 
     private static XamlLanguageServiceEngine CreateEngine() =>
-        new(new XCodeTestCompilationProvider(_sharedCompilation.Value), WpfFrameworkProfile.Instance);
+        new(new XCodeTestCompilationProvider(_sharedCompilation.Value), WpfTestFrameworkRegistry.Instance);
 
     private static XamlLanguageServiceOptions Options(bool semanticDiagnostics = false) =>
         new(WorkspaceRoot, IncludeSemanticDiagnostics: semanticDiagnostics);

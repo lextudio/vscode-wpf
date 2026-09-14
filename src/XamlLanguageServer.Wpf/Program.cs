@@ -4,7 +4,10 @@ using System.Threading;
 using XamlLanguageServer.Wpf.Diagnostics;
 using XamlLanguageServer.Wpf.Workspace;
 using XamlToCSharpGenerator.WPF.Framework;
+using XamlToCSharpGenerator.Core.Models;
 using XamlToCSharpGenerator.LanguageService;
+using XamlToCSharpGenerator.LanguageService.Framework;
+using XamlToCSharpGenerator.LanguageService.Framework.Wpf;
 using XamlToCSharpGenerator.LanguageService.Symbols;
 using XamlToCSharpGenerator.LanguageService.Workspace;
 using XamlToCSharpGenerator.LanguageServer.Protocol;
@@ -55,7 +58,14 @@ var tieredProvider = new TieredCompilationProvider(
     fullProvider: new DiagnosticCompilationProvider(new MsBuildCompilationProvider()),
     fastSnapshot: fastSnapshot);
 
-using var engine = new XamlLanguageServiceEngine(tieredProvider, WpfFrameworkProfile.Instance);
+// XamlLanguageServiceEngine now takes a XamlLanguageFrameworkRegistry rather than a single
+// WpfFrameworkProfile — build one scoped to WPF only (rather than XamlBuiltInLanguageFrameworkRegistry,
+// whose default framework is Avalonia) so type/xmlns resolution defaults correctly for this server.
+var frameworkRegistry = new XamlLanguageFrameworkRegistryBuilder()
+    .Add(WpfLanguageFrameworkProvider.Instance)
+    .Build(FrameworkProfileIds.Wpf);
+
+using var engine = new XamlLanguageServiceEngine(tieredProvider, frameworkRegistry);
 
 using var server = new AxsgLanguageServer(
     new LspMessageReader(Console.OpenStandardInput()),
@@ -63,16 +73,17 @@ using var server = new AxsgLanguageServer(
     engine,
     options);
 
-// Wire prewarm completion → invalidate stale Tier-1 analysis caches, then republish
-// diagnostics for every open document so the client's diagnostics collection catches up.
+// Wire prewarm completion → invalidate stale Tier-1 analysis caches.
 // Documents that were open during Tier-1 have cached analysis keyed on (uri, generation, version)
 // and may have already had Tier-1-only diagnostics (e.g. "type not found" for a clr-namespace
-// user type WpfCore can't see) pushed to the client. Without republishing, those stale
-// diagnostics sit in the client until an unrelated edit triggers re-analysis.
+// user type WpfCore can't see) pushed to the client. AxsgLanguageServer no longer exposes a way
+// to eagerly republish diagnostics for open documents (RefreshOpenDocumentDiagnostics was removed
+// upstream, replaced by the Avalonia-specific NotifyCacheReadyAsync cache-status notification),
+// so bumping the generation here only guarantees fresh analysis on the next request for a document
+// (edit, hover, completion, etc.) rather than an immediate push.
 tieredProvider.OnPrewarmCompleted = () =>
 {
     engine.InvalidateAllOpenDocumentCaches();
-    server.RefreshOpenDocumentDiagnostics();
 };
 
 // Kick off the full MSBuild compilation load immediately so the upgrade from

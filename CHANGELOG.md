@@ -1,5 +1,10 @@
 # Change Log
 
+## [0.9.18] - 2026-09-14
+
+- Update XAML language server.
+- Fix a few designer issues.
+
 ## [0.9.17] - 2026-07-07
 
 - Improved packaging script.

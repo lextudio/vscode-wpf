@@ -5,6 +5,12 @@ export async function run(): Promise<void> {
     return;
   }
 
+  if (process.env.WPF_TEST_SUITE === 'languageServer') {
+    const languageServerSuite = await import('./languageServer.integration');
+    await languageServerSuite.run();
+    return;
+  }
+
   // Unit tests run first — no WPF app or pipe needed.
   const xamlDiffSuite = await import('./xamlDiff.unit');
   await xamlDiffSuite.run();

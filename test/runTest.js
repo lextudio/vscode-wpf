@@ -138,12 +138,12 @@ async function main() {
     await killProcessByImage('SharpDbg.Cli.exe');
     await killDesignerProcesses();
 
-    if (suite !== 'designer') {
+    if (suite !== 'designer' && suite !== 'languageServer') {
       await runCommand('dotnet', ['build', sharpDbgProject, '--configuration', 'Debug', '-nologo']);
     }
     await runCommand('dotnet', ['build', sampleProject, '--configuration', 'Debug', '-nologo']);
 
-    if (suite === 'designer') {
+    if (suite === 'designer' || suite === 'languageServer') {
       process.env.WPF_SKIP_NETFX_TESTS = '1';
     } else {
       const msbuild = await findMsBuildExe();

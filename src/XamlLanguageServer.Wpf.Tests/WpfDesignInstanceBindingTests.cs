@@ -29,7 +29,7 @@ public sealed class WpfDesignInstanceBindingTests
         new(CreateCompilation, LazyThreadSafetyMode.ExecutionAndPublication);
 
     private static XamlLanguageServiceEngine CreateEngine() =>
-        new(new DesignInstanceInMemoryProvider(_compilation.Value), WpfFrameworkProfile.Instance);
+        new(new DesignInstanceInMemoryProvider(_compilation.Value), WpfTestFrameworkRegistry.Instance);
 
     private static XamlLanguageServiceOptions Options() => new(WorkspaceRoot);
 

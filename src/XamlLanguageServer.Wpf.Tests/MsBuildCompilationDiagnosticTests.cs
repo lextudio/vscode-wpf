@@ -198,7 +198,7 @@ public sealed class MsBuildCompilationDiagnosticTests : IDisposable
         const string presentationNs = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
         const string xamlNs         = "http://schemas.microsoft.com/winfx/2006/xaml";
 
-        using var engine = new XamlLanguageServiceEngine(_provider, WpfFrameworkProfile.Instance);
+        using var engine = new XamlLanguageServiceEngine(_provider, WpfTestFrameworkRegistry.Instance);
 
         // Use a document with a bare "<" on line 4 (0-based) to trigger element-name completion.
         // The XML parser will report AXSG0001 but the completion engine uses text-based
