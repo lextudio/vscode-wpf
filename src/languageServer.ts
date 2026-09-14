@@ -19,7 +19,7 @@ import {
 let client: LanguageClient | undefined;
 let log: vscode.OutputChannel | undefined;
 
-function getLog(): vscode.OutputChannel {
+export function getLog(): vscode.OutputChannel {
   if (!log) {
     log = vscode.window.createOutputChannel('WPF Extension');
   }

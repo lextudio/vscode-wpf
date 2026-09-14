@@ -29,6 +29,7 @@ import { disposeStatusBar, getStatusBarItem, updateStatusBar } from './statusBar
 import {
   getDesignerProjectContext,
   getLanguageServerClient,
+  getLog,
   startLanguageServer,
   stopLanguageServer,
 } from './languageServer';
@@ -1323,9 +1324,11 @@ function resolveAnalyzerExecutable(context: vscode.ExtensionContext): string | n
   for (const name of names) {
     const candidate = path.join(toolsDir, name);
     if (fs.existsSync(candidate)) {
+      getLog().appendLine(`[Analyzer] Using ${candidate}`);
       return candidate;
     }
   }
+  getLog().appendLine(`[Analyzer] No wpf-project-analyzer binary found in ${toolsDir}`);
   return null;
 }
 
@@ -1343,17 +1346,24 @@ function runProjectAnalyzer(
     const args = isDll ? [analyzerExe, projectPath] : [projectPath];
 
     let stdout = '';
+    let stderr = '';
     const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    proc.on('error', () => resolve(null));
+    proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    proc.on('error', err => {
+      getLog().appendLine(`[Analyzer] Failed to launch "${cmd}": ${err.message}`);
+      resolve(null);
+    });
     proc.on('close', (code: number | null) => {
       if (code !== 0 && code !== null) {
+        getLog().appendLine(`[Analyzer] "${cmd}" exited with code ${code}${stderr ? `: ${stderr.trim()}` : ''}`);
         resolve(null);
         return;
       }
       try {
         resolve(JSON.parse(stdout) as ProjectAnalysisResult);
       } catch {
+        getLog().appendLine(`[Analyzer] Could not parse output: ${stdout.trim()}`);
         resolve(null);
       }
     });
@@ -1613,6 +1623,9 @@ async function updateWpfXamlContext(
 
   const result = await runProjectAnalyzer(analyzerExe, projectFile);
   const isWpf = result?.isWpfProject ?? false;
+  if (result === null) {
+    getLog().appendLine(`[Analyzer] Analysis of ${projectFile} failed — defaulting to isWpfProject=false, Hot Reload/Designer buttons will be hidden`);
+  }
   analyzerCache.set(projectFile, isWpf);
   void vscode.commands.executeCommand('setContext', 'wpf.isWpfXaml', isWpf);
 }
