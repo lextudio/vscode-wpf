@@ -549,7 +549,16 @@ public static class WpfHotReloadAgent
                     else if (string.Equals(request.Kind, "query", StringComparison.Ordinal))
                     {
                         result = "ok";
-                        responseValue = QueryValue(request.Query);
+                        // Most queries read live DependencyObjects, which are owned by the UI
+                        // thread; reading them straight from this pipe thread throws
+                        // "The calling thread cannot access this object because a different
+                        // thread owns it." The constant-valued queries (agent.ready and the
+                        // diagnostics/sourceMap counters) happen to survive that, which is what
+                        // made this look like a per-query quirk rather than a threading bug.
+                        var queryApp = Application.Current;
+                        responseValue = queryApp is null
+                            ? QueryValue(request.Query)
+                            : queryApp.Dispatcher.Invoke(() => QueryValue(request.Query));
                     }
                     else if (string.Equals(request.Kind, "preview", StringComparison.Ordinal))
                     {
@@ -805,19 +814,14 @@ public static class WpfHotReloadAgent
         private const int WS_EX_NOACTIVATE   = 0x08000000;
         private const int WS_EX_TOOLWINDOW   = 0x00000080;
 
-        private const int SM_CYSIZEFRAME = 33; // vertical resize border height (pixels)
-
         [DllImport("user32.dll")]
         private static extern int GetWindowLong(IntPtr hwnd, int nIndex);
 
         [DllImport("user32.dll")]
         private static extern int SetWindowLong(IntPtr hwnd, int nIndex, int dwNewLong);
 
-        [DllImport("user32.dll")]
-        private static extern int GetSystemMetrics(int nIndex);
-
         private readonly Window _host;
-        private readonly TextBlock _label;
+        private readonly System.Windows.Shapes.Path _label;
         private readonly Border _border;
         private DispatcherTimer? _fadeTimer;
 
@@ -835,14 +839,21 @@ public static class WpfHotReloadAgent
             Owner         = host;
             SizeToContent = SizeToContent.WidthAndHeight;
 
-            _label = new TextBlock
+            // Drawn as geometry, not text. The badge used a "Segoe UI" glyph and the fire emoji
+            // U+1F525, which is a Windows assumption twice over: that font does not exist on
+            // macOS or Linux, and a colour-emoji codepoint has no glyph in the portable host's
+            // text stack either - so the badge rendered as an empty replacement box, a
+            // meaningless rectangle sitting on the title bar. A Path needs no font at all.
+            _label = new System.Windows.Shapes.Path
             {
-                Text       = "\U0001F525",
-                ToolTip    = "Hot Reload active",
-                Foreground = Brushes.White,
-                FontSize   = 11,
-                FontFamily = new FontFamily("Segoe UI"),
+                Fill    = Brushes.White,
+                Stretch = Stretch.Uniform,
+                Width   = 10,
+                Height  = 10,
+                Data    = StateGeometry(OverlayState.Connected),
+                ToolTip = "Hot Reload active",
                 VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
             };
 
             _border = new Border
@@ -885,33 +896,84 @@ public static class WpfHotReloadAgent
             if (_host.WindowState == WindowState.Minimized)
                 return;
 
-            // Caption height in device-independent units.
+            // Measure the badge so it can be centred in the caption band.
+            _border.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            var badgeWidth  = _border.DesiredSize.Width;
+            var badgeHeight = _border.DesiredSize.Height;
+
+            // Anchor on the client origin, NOT Window.Left/Top. Those are NaN on the portable
+            // (LibreWPF) host, and NaN propagates silently: the badge was assigned Left=NaN,
+            // Top=NaN and simply went nowhere, with the log still reporting a successful inject.
+            Point clientOrigin, clientTopRight;
+            try
+            {
+                clientOrigin   = _host.PointToScreen(new Point(0, 0));
+                clientTopRight = _host.PointToScreen(new Point(_host.ActualWidth, 0));
+            }
+            catch
+            {
+                // No presentation source yet; a later LocationChanged/SizeChanged will retry.
+                return;
+            }
+
+            if (double.IsNaN(clientOrigin.X) || double.IsNaN(clientOrigin.Y))
+                return;
+
+            // PointToScreen returns device pixels under Microsoft WPF but device-independent units
+            // on the portable host, so derive the factor from a known width instead of assuming
+            // either. Measured on macOS at 2x: the two points are 800 apart for an 800-unit wide
+            // window, i.e. scale 1 while the DPI scale is 2 - dividing by the DPI would be wrong.
+            var scale = _host.ActualWidth > 0
+                ? (clientTopRight.X - clientOrigin.X) / _host.ActualWidth
+                : 1.0;
+            if (double.IsNaN(scale) || scale <= 0)
+                scale = 1.0;
+
+            var clientLeft = clientOrigin.X / scale;
+            var clientTop  = clientOrigin.Y / scale;
+
+            // The caption band sits immediately above the client area on both platforms, so the
+            // badge goes top-centre of the title bar without any platform-specific frame maths.
             var captionHeight = SystemParameters.WindowCaptionHeight;
 
-            // Resize border thickness in DIP. SM_CXSIZEFRAME / SM_CYSIZEFRAME return pixels;
-            // divide by the DPI scale factor to get WPF device-independent units.
-            // SystemParameters.ResizeBorderThickness is .NET 5+ only so we use GetSystemMetrics.
-            var dpi = GetDpiScale();
-            var borderTop = GetSystemMetrics(SM_CYSIZEFRAME) / dpi;
-
-            // Measure badge so we can center it in the caption band.
-            _border.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            var badgeHeight = _border.DesiredSize.Height;
-            var badgeWidth  = _border.DesiredSize.Width;
-
-            // X: horizontally centred in the window.
-            var x = _host.Left + (_host.Width - badgeWidth) / 2;
-            // Y: vertically centred in the caption strip.
-            var y = _host.Top + borderTop + (captionHeight - badgeHeight) / 2;
-
-            Left = x;
-            Top  = y;
+            Left = clientLeft + (_host.ActualWidth - badgeWidth) / 2;
+            Top  = clientTop - captionHeight + (captionHeight - badgeHeight) / 2;
         }
 
-        private double GetDpiScale()
+        /// <summary>
+        /// The badge glyph for a state, as geometry in a 10x10 box. Self-contained on purpose:
+        /// this agent runs inside the target application and cannot reach the IDE's icon
+        /// resources, and font-based glyphs are not portable - see the note on _label.
+        /// </summary>
+        private static Geometry StateGeometry(OverlayState state)
         {
-            var source = PresentationSource.FromVisual(_host);
-            return source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
+            string path;
+            switch (state)
+            {
+                case OverlayState.Applying:
+                    // Arc with an arrow head: "working".
+                    path = "M5,0.6 A4.4,4.4 0 1 1 0.6,5 L2.1,5 A2.9,2.9 0 1 0 5,2.1 Z M5,0 L7.4,1.4 L5,2.8 Z";
+                    break;
+                case OverlayState.Applied:
+                    path = "M0.8,5.2 L3.8,8.2 L9.2,1.6 L8,0.6 L3.8,5.8 L2,4 Z";
+                    break;
+                case OverlayState.Error:
+                    path = "M1,2 L2,1 L5,4 L8,1 L9,2 L6,5 L9,8 L8,9 L5,6 L2,9 L1,8 L4,5 Z";
+                    break;
+                case OverlayState.Disconnected:
+                    // Hollow ring: connected-but-idle reads differently from a solid mark.
+                    path = "M5,0.5 A4.5,4.5 0 1 1 4.99,0.5 Z M5,2.2 A2.8,2.8 0 1 0 5.01,2.2 Z";
+                    break;
+                default:
+                    // Flame, standing in for the emoji the badge used to try to render.
+                    path = "M5,0 C6.6,2.2 8.6,3.4 8.6,6 A3.6,3.6 0 0 1 1.4,6 C1.4,4.3 2.3,3.3 3.2,2.2"
+                        + " C3.4,3.3 4,3.9 4.7,4.2 C4.3,2.8 4.4,1.3 5,0 Z";
+                    break;
+            }
+
+            var geometry = Geometry.Parse(path);
+            geometry.Freeze();
+            return geometry;
         }
 
         public void UpdateStatus(OverlayState state, string message)
@@ -921,17 +983,17 @@ public static class WpfHotReloadAgent
             switch (state)
             {
                 case OverlayState.Connected:
-                    _label.Text = "\U0001F525";
+                    _label.Data = StateGeometry(state);
                     _label.ToolTip = "Hot Reload active";
                     _border.Background = new SolidColorBrush(Color.FromArgb(200, 40, 40, 40));
                     break;
                 case OverlayState.Applying:
-                    _label.Text = "\u27F3";
+                    _label.Data = StateGeometry(state);
                     _label.ToolTip = "Applying\u2026";
                     _border.Background = new SolidColorBrush(Color.FromArgb(200, 30, 80, 160));
                     break;
                 case OverlayState.Applied:
-                    _label.Text = "\u2713";
+                    _label.Data = StateGeometry(state);
                     _label.ToolTip = "Updated";
                     _border.Background = new SolidColorBrush(Color.FromArgb(200, 30, 120, 50));
                     _fadeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
@@ -943,12 +1005,12 @@ public static class WpfHotReloadAgent
                     _fadeTimer.Start();
                     break;
                 case OverlayState.Error:
-                    _label.Text = "\u2717";
+                    _label.Data = StateGeometry(state);
                     _label.ToolTip = message;
                     _border.Background = new SolidColorBrush(Color.FromArgb(200, 160, 30, 30));
                     break;
                 case OverlayState.Disconnected:
-                    _label.Text = "\u25CB";
+                    _label.Data = StateGeometry(state);
                     _label.ToolTip = "Disconnected";
                     _border.Background = new SolidColorBrush(Color.FromArgb(200, 120, 120, 40));
                     break;
@@ -2905,7 +2967,15 @@ public static class WpfHotReloadAgent
     private static IEnumerable<object> EnumerateDescendants(DependencyObject root)
     {
         var queue = new Queue<object>();
+        // An element is normally reachable through BOTH the visual and the logical tree, and the
+        // two overlap heavily, so without this set the same subtree is enqueued once per path
+        // that reaches it and the walk blows up combinatorially. On a small sample window that
+        // only wastes work; on a real application (measured against OpenDevelop's docked
+        // workbench) it never finishes, and because BuildSourceMap runs inside a
+        // Dispatcher.Invoke it takes the UI thread down with it - the app hangs with no error.
+        var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
         queue.Enqueue(root);
+        visited.Add(root);
 
         while (queue.Count > 0)
         {
@@ -2925,12 +2995,19 @@ public static class WpfHotReloadAgent
 
                 for (var i = 0; i < visualChildCount; i++)
                 {
-                    queue.Enqueue(VisualTreeHelper.GetChild(dependencyObject, i));
+                    var visualChild = VisualTreeHelper.GetChild(dependencyObject, i);
+                    if (visited.Add(visualChild))
+                    {
+                        queue.Enqueue(visualChild);
+                    }
                 }
 
                 foreach (var logicalChild in LogicalTreeHelper.GetChildren(dependencyObject))
                 {
-                    queue.Enqueue(logicalChild);
+                    if (logicalChild is not null && visited.Add(logicalChild))
+                    {
+                        queue.Enqueue(logicalChild);
+                    }
                 }
             }
         }
