@@ -3109,8 +3109,19 @@ public static class WpfHotReloadAgent
 
         try
         {
-            // Default schema context knows core WPF types such as Window/Grid/TextBlock.
-            return ParseXamlIgnoringEventMembersCore(xamlText, schemaContext: null, localAssembly: appAssembly);
+            // WPF's own schema context, not a default XamlSchemaContext. A plain context hands the
+            // object writer CLR property members, so IProvideValueTarget.TargetProperty is not a
+            // DependencyProperty and every markup extension that requires one fails - a page with
+            // a single Foreground="{DynamicResource ...}" aborted the whole parse with
+            // "A 'DynamicResourceExtension' cannot be set on the 'Foreground' property of type
+            // 'Page'", even though Page.Foreground is a DP. The retry below could not rescue it
+            // either: that one only triggers for unknown-type failures. GetWpfSchemaContext
+            // returns DP-aware members, which is also why the designer's
+            // XamlObjectServiceProvider switched to it.
+            return ParseXamlIgnoringEventMembersCore(
+                xamlText,
+                System.Windows.Markup.XamlReader.GetWpfSchemaContext(),
+                localAssembly: appAssembly);
         }
         catch (Exception ex) when (IsUnknownTypeParseFailure(ex))
         {
