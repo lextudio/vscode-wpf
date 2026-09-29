@@ -5,6 +5,7 @@ using XamlLanguageServer.Wpf.Diagnostics;
 using XamlLanguageServer.Wpf.Workspace;
 using XamlToCSharpGenerator.WPF.Framework;
 using XamlToCSharpGenerator.LanguageService;
+using XamlToCSharpGenerator.LanguageService.Framework.Wpf;
 using XamlToCSharpGenerator.LanguageService.Symbols;
 using XamlToCSharpGenerator.LanguageService.Workspace;
 using XamlToCSharpGenerator.LanguageServer.Protocol;
@@ -16,7 +17,11 @@ Console.OutputEncoding = System.Text.Encoding.UTF8;
 var workspaceRoot = ParseArg(args, "--workspace");
 Console.Error.WriteLine($"[WPF-LS] Starting. workspaceRoot={workspaceRoot ?? "(null)"}");
 Console.Error.WriteLine($"[WPF-LS] Args: [{string.Join(", ", args)}]");
-var options = new XamlLanguageServiceOptions(workspaceRoot);
+// This host serves exactly one framework, so it says so instead of letting the engine
+// auto-detect: IXamlLanguageFrameworkProvider documents that a single-framework host should
+// pass its id through XamlLanguageServiceOptions.FrameworkId, which short-circuits detection.
+var framework = WpfLanguageFrameworkProvider.Instance.Framework;
+var options = new XamlLanguageServiceOptions(workspaceRoot, framework.Id);
 
 // Build the two-tier compilation pipeline:
 //
@@ -72,7 +77,7 @@ using var server = new AxsgLanguageServer(
 tieredProvider.OnPrewarmCompleted = () =>
 {
     engine.InvalidateAllOpenDocumentCaches();
-    _ = server.NotifyCacheReadyAsync("wpf");
+    _ = server.NotifyCacheReadyAsync(framework.Id);
 };
 
 // Kick off the full MSBuild compilation load immediately so the upgrade from

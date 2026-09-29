@@ -36,8 +36,20 @@ namespace XamlLanguageServer.Wpf.Workspace;
 /// </summary>
 internal static class WpfFastCompilationProvider
 {
-    private const string WpfPresentationXmlNamespace =
-        "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+    // The WPF framework profile owns every framework-specific fact this provider used to
+    // hardcode. Reading them from the profile instead means a second framework (MAUI, say) can
+    // reuse the identical Tier-1 pipeline by supplying its own profile values, and WPF keeps its
+    // current behavior byte-for-byte.
+    private static readonly XamlToCSharpGenerator.LanguageService.Framework.XamlLanguageFrameworkInfo Framework =
+        XamlToCSharpGenerator.LanguageService.Framework.Wpf.WpfLanguageFrameworkProvider.Instance.Framework;
+
+    private static string WpfPresentationXmlNamespace => Framework.DefaultXmlNamespace;
+
+    private static string XmlnsDefinitionAttributeName =>
+        Framework.XmlnsDefinitionAttributeMetadataNames.IsDefaultOrEmpty
+            ? "System.Windows.Markup.XmlnsDefinitionAttribute"
+            : Framework.XmlnsDefinitionAttributeMetadataNames[0];
+
     private static readonly JsonSerializerOptions CacheJsonOptions = new()
     {
         WriteIndented = false
@@ -149,25 +161,26 @@ internal static class WpfFastCompilationProvider
         // Some runtime/reference packs do not reliably expose enough WPF
         // XmlnsDefinitionAttribute metadata during Tier-1 startup. Seed a
         // minimal mapping so core WPF control completions (Button/Grid/etc.)
-        // are always available while MSBuild Tier-2 is loading.
-        var namespaces = new[]
+        // are always available while MSBuild Tier-2 is loading. The namespace
+        // list and the attribute name come from the framework profile.
+        var namespaces = Framework.Profile.Tier1SeedClrNamespaces;
+        if (namespaces.IsDefaultOrEmpty)
         {
-            "System.Windows",
-            "System.Windows.Controls",
-            "System.Windows.Controls.Primitives",
-            "System.Windows.Data",
-            "System.Windows.Documents",
-            "System.Windows.Input",
-            "System.Windows.Media",
-            "System.Windows.Navigation",
-            "System.Windows.Shapes",
-        };
+            return "internal static class __WpfTier1XmlnsMapAnchor { }";
+        }
+
+        // Strip the "Attribute" suffix so the emitted source reads
+        // [assembly: System.Windows.Markup.XmlnsDefinition(...)] rather than
+        // naming the attribute type itself.
+        string attributeName = XmlnsDefinitionAttributeName.EndsWith("Attribute", StringComparison.Ordinal)
+            ? XmlnsDefinitionAttributeName[..^"Attribute".Length]
+            : XmlnsDefinitionAttributeName;
 
         var lines = new List<string>(namespaces.Length + 1);
         foreach (var clrNs in namespaces)
         {
             lines.Add(
-                $"[assembly: System.Windows.Markup.XmlnsDefinition(\"{WpfPresentationXmlNamespace}\", \"{clrNs}\")]"
+                $"[assembly: {attributeName}(\"{WpfPresentationXmlNamespace}\", \"{clrNs}\")]"
             );
         }
 
