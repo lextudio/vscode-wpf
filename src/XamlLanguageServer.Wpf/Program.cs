@@ -1,120 +1,12 @@
-using System;
-using System.Diagnostics;
-using System.Linq;
-using System.Threading;
-using XamlLanguageServer.Wpf;
 using XamlLanguageServer.Wpf.Diagnostics;
 using XamlLanguageServer.Wpf.Workspace;
-using XamlToCSharpGenerator.WPF.Framework;
-using XamlToCSharpGenerator.LanguageService;
-using XamlToCSharpGenerator.LanguageService.Framework;
-using XamlToCSharpGenerator.LanguageService.Framework.All;
 using XamlToCSharpGenerator.LanguageService.Framework.Wpf;
-using XamlToCSharpGenerator.LanguageService.Symbols;
-using XamlToCSharpGenerator.LanguageService.Workspace;
-using XamlToCSharpGenerator.LanguageServer.Protocol;
-using XamlToCSharpGenerator.LanguageServer.Server;
+using XamlToCSharpGenerator.LanguageServer.Hosting;
 
-// Redirect trace output that might corrupt the LSP stdio stream.
-Console.OutputEncoding = System.Text.Encoding.UTF8;
-
-var workspaceRoot = ParseArg(args, "--workspace");
-Console.Error.WriteLine($"[WPF-LS] Starting. workspaceRoot={workspaceRoot ?? "(null)"}");
-Console.Error.WriteLine($"[WPF-LS] Args: [{string.Join(", ", args)}]");
-
-// Which XAML dialect this server instance serves. A host that knows its project is WPF passes
-// that id explicitly, which short-circuits the engine's auto-detection (see
-// IXamlLanguageFrameworkProvider: a host dedicated to one framework "should not guess at all").
-// Every framework registered in XamlBuiltInLanguageFrameworkRegistry is selectable this way, so
-// the same binary can serve any of them; when no id is supplied it falls back to the historical
-// WPF behaviour.
-var requestedFrameworkId = ParseArg(args, FrameworkSelection.ArgumentName);
-var framework = FrameworkSelection.Resolve(requestedFrameworkId);
-var options = new XamlLanguageServiceOptions(workspaceRoot, framework.Id);
-Console.Error.WriteLine($"[WPF-LS] Framework: {framework.Id} (presentation xmlns {framework.DefaultXmlNamespace})");
-
-// Build the two-tier compilation pipeline:
-//
-//   Tier 1 (WPF-core, instant)
-//     A Roslyn compilation built from the Microsoft.WindowsDesktop.App shared
-//     framework assemblies.  Standard WPF element / attribute completions
-//     appear immediately — no MSBuild wait.
-//
-//   Tier 2 (full, background)
-//     MSBuildCompilationProvider loads the user's project (NuGet packages,
-//     user-defined controls).  DiagnosticCompilationProvider wraps it to emit
-//     development-time diagnostics to stderr.  The expensive per-assembly
-//     attribute scan runs asynchronously and never blocks a completion request.
-//
-// TieredCompilationProvider manages the handoff between tiers and owns the
-// background prewarm task.
-var fastSnapshot = WpfFastCompilationProvider.BuildFastSnapshot();
-if (fastSnapshot?.Compilation is { } fastCompilation)
-{
-    var prewarmStopwatch = Stopwatch.StartNew();
-    try
-    {
-        Console.Error.WriteLine(
-            "[WPF-LS] Tier-1 metadata warmup: loading cached WPF control/profile metadata " +
-            "(or building it once) so default WPF IntelliSense is available before MSBuild completes.");
-        _ = AvaloniaTypeIndex.Create(fastCompilation);
-        Console.Error.WriteLine($"[WPF-LS] Tier-1 type index ready in {prewarmStopwatch.ElapsedMilliseconds} ms.");
-        Console.Error.WriteLine(WpfFastCompilationProvider.PersistTypeIndexToDisk(fastCompilation));
-    }
-    catch (Exception ex)
-    {
-        Console.Error.WriteLine($"[WPF-LS] Tier-1 type index prewarm failed: {ex.Message}");
-    }
-}
-var tieredProvider = new TieredCompilationProvider(
-    fullProvider: new DiagnosticCompilationProvider(new MsBuildCompilationProvider()),
-    fastSnapshot: fastSnapshot);
-
-using var engine = new XamlLanguageServiceEngine(tieredProvider);
-
-using var server = new AxsgLanguageServer(
-    new LspMessageReader(Console.OpenStandardInput()),
-    new LspMessageWriter(Console.OpenStandardOutput()),
-    engine,
-    options);
-
-// Wire prewarm completion → invalidate stale Tier-1 analysis caches, then notify the client
-// (same pattern as the AXSG language server's Program.cs). Documents that were open during
-// Tier-1 have cached analysis keyed on (uri, generation, version) and may have already had
-// Tier-1-only diagnostics (e.g. "type not found" for a clr-namespace user type WpfCore can't
-// see) pushed to the client. The generation bump forces re-analysis on the next request, and
-// the cacheStatus notification lets the client re-surface diagnostics for open documents.
-tieredProvider.OnPrewarmCompleted = () =>
-{
-    engine.InvalidateAllOpenDocumentCaches();
-    _ = server.NotifyCacheReadyAsync(framework.Id);
-};
-
-// Kick off the full MSBuild compilation load immediately so the upgrade from
-// Tier 1 → Tier 2 happens as early as possible.
-if (workspaceRoot is not null)
-{
-    var projectFile = TieredCompilationProvider.FindFirstProjectFile(workspaceRoot);
-    if (projectFile is not null)
-    {
-        Console.Error.WriteLine($"[WPF-LS] Starting background prewarm for {projectFile}");
-        _ = tieredProvider.PrewarmAsync(projectFile, workspaceRoot);
-    }
-    else
-    {
-        Console.Error.WriteLine("[WPF-LS] No supported WPF project file (.csproj/.vbproj/.fsproj) found in workspace — prewarm skipped.");
-    }
-}
-
-var exitCode = await server.RunAsync(CancellationToken.None).ConfigureAwait(false);
-Environment.ExitCode = exitCode;
-
-static string? ParseArg(string[] args, string name)
-{
-    for (var i = 0; i < args.Length - 1; i++)
-    {
-        if (string.Equals(args[i], name, StringComparison.Ordinal))
-            return args[i + 1];
-    }
-    return null;
-}
+// The WPF XAML language server: WPF only (LibreWPF and Microsoft WPF are one dialect). Every other
+// framework has its own server; this one never serves another framework's XAML.
+Environment.ExitCode = await XamlLanguageServerHost.RunAsync(
+    args,
+    WpfLanguageFrameworkProvider.Instance.Framework,
+    WpfTier1ReferenceSet.Instance,
+    full => new DiagnosticCompilationProvider(full));

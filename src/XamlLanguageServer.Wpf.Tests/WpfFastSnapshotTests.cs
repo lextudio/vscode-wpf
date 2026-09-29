@@ -1,5 +1,6 @@
 using XamlLanguageServer.Wpf.Workspace;
 using XamlToCSharpGenerator.LanguageService.Symbols;
+using XamlToCSharpGenerator.LanguageService.Workspace.Tier1;
 
 namespace XamlLanguageServer.Wpf.Tests;
 
@@ -10,11 +11,12 @@ public sealed class WpfFastSnapshotTests
     [Fact]
     public void FastSnapshot_ExposesCoreWpfControls()
     {
-        var snapshot = WpfFastCompilationProvider.BuildFastSnapshot();
+        var framework = XamlToCSharpGenerator.LanguageService.Framework.Wpf.WpfLanguageFrameworkProvider.Instance.Framework;
+        var snapshot = FastCompilationProvider.BuildFastSnapshot(framework, WpfTier1ReferenceSet.Instance);
         Assert.NotNull(snapshot);
         Assert.NotNull(snapshot!.Compilation);
 
-        var index = AvaloniaTypeIndex.Create(snapshot.Compilation!);
+        var index = AvaloniaTypeIndex.Create(snapshot.Compilation!, framework);
         var types = index.GetTypes(PresentationNs);
 
         Assert.NotEmpty(types);
