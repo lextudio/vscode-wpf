@@ -1,10 +1,14 @@
 using System;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
+using XamlLanguageServer.Wpf;
 using XamlLanguageServer.Wpf.Diagnostics;
 using XamlLanguageServer.Wpf.Workspace;
 using XamlToCSharpGenerator.WPF.Framework;
 using XamlToCSharpGenerator.LanguageService;
+using XamlToCSharpGenerator.LanguageService.Framework;
+using XamlToCSharpGenerator.LanguageService.Framework.All;
 using XamlToCSharpGenerator.LanguageService.Framework.Wpf;
 using XamlToCSharpGenerator.LanguageService.Symbols;
 using XamlToCSharpGenerator.LanguageService.Workspace;
@@ -17,11 +21,17 @@ Console.OutputEncoding = System.Text.Encoding.UTF8;
 var workspaceRoot = ParseArg(args, "--workspace");
 Console.Error.WriteLine($"[WPF-LS] Starting. workspaceRoot={workspaceRoot ?? "(null)"}");
 Console.Error.WriteLine($"[WPF-LS] Args: [{string.Join(", ", args)}]");
-// This host serves exactly one framework, so it says so instead of letting the engine
-// auto-detect: IXamlLanguageFrameworkProvider documents that a single-framework host should
-// pass its id through XamlLanguageServiceOptions.FrameworkId, which short-circuits detection.
-var framework = WpfLanguageFrameworkProvider.Instance.Framework;
+
+// Which XAML dialect this server instance serves. A host that knows its project is WPF passes
+// that id explicitly, which short-circuits the engine's auto-detection (see
+// IXamlLanguageFrameworkProvider: a host dedicated to one framework "should not guess at all").
+// Every framework registered in XamlBuiltInLanguageFrameworkRegistry is selectable this way, so
+// the same binary can serve any of them; when no id is supplied it falls back to the historical
+// WPF behaviour.
+var requestedFrameworkId = ParseArg(args, FrameworkSelection.ArgumentName);
+var framework = FrameworkSelection.Resolve(requestedFrameworkId);
 var options = new XamlLanguageServiceOptions(workspaceRoot, framework.Id);
+Console.Error.WriteLine($"[WPF-LS] Framework: {framework.Id} (presentation xmlns {framework.DefaultXmlNamespace})");
 
 // Build the two-tier compilation pipeline:
 //
