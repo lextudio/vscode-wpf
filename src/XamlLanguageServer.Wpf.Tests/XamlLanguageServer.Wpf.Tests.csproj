@@ -12,7 +12,10 @@
     <PackageReference Include="xunit" Version="2.9.0" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
     <PackageReference Include="coverlet.collector" Version="6.0.2" />
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.10.0" />
+    <!-- Must match the engine's MicrosoftCodeAnalysisVersion (wxsg Directory.Build.props, 5.3.0).
+         Pinned at 4.10.0 this conflicted with the 5.3.0 the server brings transitively
+         (NU1107) and the whole test project failed to restore. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.3.0" />
   </ItemGroup>
 
   <ItemGroup>
