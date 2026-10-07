@@ -1386,7 +1386,13 @@ public static class WpfHotReloadAgent
 
         return query switch
         {
-            "agent.ready" => "1",
+            // Ready means "a change can be applied now", not "the pipe is up": the agent starts
+            // listening from the startup hook, long before the application creates its window, and
+            // an apply or query in that window finds nothing. WPF sets MainWindow when the first
+            // window is constructed, and its InitializeComponent runs synchronously on this (UI)
+            // thread, so a non-null MainWindow already has its named tree. Not IsLoaded: a preview
+            // host started hidden never loads, and must still report ready.
+            "agent.ready" => Application.Current?.MainWindow is null ? "0" : "1",
             "sourceMap.built" => _sourceMapBuilt ? "1" : "0",
             "sourceMap.count" => _sourceMap.Count.ToString(),
             "diagnostics.sourceInfo" => (_getXamlSourceInfoMethod is not null) ? "1" : "0",
