@@ -556,9 +556,22 @@ public static class WpfHotReloadAgent
                         // diagnostics/sourceMap counters) happen to survive that, which is what
                         // made this look like a per-query quirk rather than a threading bug.
                         var queryApp = Application.Current;
-                        responseValue = queryApp is null
-                            ? QueryValue(request.Query)
-                            : queryApp.Dispatcher.Invoke(() => QueryValue(request.Query));
+                        if (queryApp is null)
+                        {
+                            // The agent listens from the startup hook, before the application
+                            // exists. Application.Current can become non-null between the check
+                            // above and the reads inside QueryValue, which would then touch
+                            // MainWindow from this pipe thread and throw the cross-thread
+                            // InvalidOperationException - failing the whole session on a race at
+                            // startup. With no application yet, nothing is ready.
+                            responseValue = string.Equals(request.Query, "agent.ready", StringComparison.Ordinal)
+                                ? "0"
+                                : QueryValueWithoutApplication(request.Query);
+                        }
+                        else
+                        {
+                            responseValue = queryApp.Dispatcher.Invoke(() => QueryValue(request.Query));
+                        }
                     }
                     else if (string.Equals(request.Kind, "preview", StringComparison.Ordinal))
                     {
@@ -1363,6 +1376,23 @@ public static class WpfHotReloadAgent
         }
 
         return Application.Current.MainWindow;
+    }
+
+    /// <summary>
+    /// <see cref="QueryValue"/> for a moment when there is no application yet, from the pipe thread.
+    /// A query that reads the live tree is not ready then, and one that races with the application
+    /// being created must not surface the cross-thread exception.
+    /// </summary>
+    private static string? QueryValueWithoutApplication(string? query)
+    {
+        try
+        {
+            return QueryValue(query);
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private static string? QueryValue(string? query)
